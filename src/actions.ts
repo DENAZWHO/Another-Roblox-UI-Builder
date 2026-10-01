@@ -404,6 +404,8 @@ export function copySelection() {
   const ids = topLevelOnly(s.doc.nodes, s.selection).filter((id) => !s.doc.rootIds.includes(id));
   if (!ids.length) return false;
   clipboard = extractFragment(s.doc.nodes, ids);
+  // replace whatever is on the system clipboard (e.g. a screenshot), so Ctrl+V pastes these rather than an image reference
+  navigator.clipboard?.writeText(ids.map((id) => s.doc.nodes[id].name).join(', ')).catch(() => {});
   s.showToast(`Copied ${ids.length} item${ids.length > 1 ? 's' : ''}`);
   return true;
 }

@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { Pipette, X } from 'lucide-react';
 import { useStore } from '../store';
 import { CLASS_PROPS } from '../model/schema';
+import { eyedrop, isEyedropping, useCanEyedrop } from './eyedropper';
 
 // ---------------------------------------------------------------------------
 // colour maths
@@ -117,9 +118,10 @@ export function ColorPicker({ value, onChange, transparency, onTransparency, anc
   }, [anchor]);
 
   useEffect(() => {
-    const down = (e: PointerEvent) => ref.current && !ref.current.contains(e.target as Node) && onClose();
+    // (clicks and Esc while picking from the screen belong to the eyedropper)
+    const down = (e: PointerEvent) => !isEyedropping() && ref.current && !ref.current.contains(e.target as Node) && onClose();
     const key = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return;
+      if (e.key !== 'Escape' || isEyedropping()) return;
       // don't let the editor's Escape shortcut (deselect) fire too
       e.stopImmediatePropagation();
       onClose();
@@ -150,13 +152,10 @@ export function ColorPicker({ value, onChange, transparency, onTransparency, anc
   const [r, g, b] = hexToRgb(value);
   const pure = hsvToHex({ h: hsv.h, s: 1, v: 1 });
 
+  const canPick = useCanEyedrop();
   const pickScreen = async () => {
-    try {
-      const res = await new (window as any).EyeDropper().open();
-      setHex(res.sRGBHex.toLowerCase());
-    } catch {
-      /* cancelled */
-    }
+    const hex = await eyedrop();
+    if (hex) setHex(hex);
   };
 
   return createPortal(
@@ -171,7 +170,7 @@ export function ColorPicker({ value, onChange, transparency, onTransparency, anc
         <div className="cp-thumb" style={{ left: `${hsv.s * 100}%`, top: `${(1 - hsv.v) * 100}%`, background: value }} />
       </div>
       <div className="cp-row">
-        {'EyeDropper' in window && (
+        {canPick && (
           <button className="icon-btn" title="Pick a colour from the screen" onClick={pickScreen}><Pipette size={14} /></button>
         )}
         <div className="cp-sliders">

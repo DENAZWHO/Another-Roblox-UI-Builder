@@ -2,6 +2,7 @@
 // clips are TweenService calls fired by triggers, effects run every frame.
 import { applyOverrides, clipLength, ease, lerpValue, type Overrides } from './animation';
 import type { LayoutResult } from './layout';
+import { pathTo } from './doc';
 import type { AnimClip, Doc, GuiNode, ToastEnter, TriggerKind, Tween, UDim2, Vec2 } from './types';
 
 export type UIEvent = 'click' | 'enter' | 'leave' | 'down' | 'up';
@@ -24,6 +25,22 @@ interface FxState { hovered: boolean; pressed: boolean; scale: number; look?: nu
 
 /** Constant used by mouse-follow falloff and tilt, shared with the Luau output */
 export const MOUSE_RANGE = 300;
+
+const CLICK_BUTTONS = ['TextButton', 'ImageButton'];
+
+/** Buttons that get a MouseButton1Click print (not ones inside toast templates, which are cloned at runtime) */
+export function clickButtons(doc: Doc, nodes: GuiNode[] = Object.values(doc.nodes)): GuiNode[] {
+  if (doc.clickPrints === false) return [];
+  const inToast = (id: string) => pathTo(doc.nodes, id).some((a) => doc.nodes[a]?.toast);
+  return nodes.filter((n) => CLICK_BUTTONS.includes(n.className) && !inToast(n.id));
+}
+
+/** "Play clicked", or "Card/Buy clicked" when several buttons share a name */
+export function clickMessage(doc: Doc, n: GuiNode): string {
+  const twins = Object.values(doc.nodes).filter((m) => m.name === n.name && CLICK_BUTTONS.includes(m.className)).length > 1;
+  const parent = n.parentId ? doc.nodes[n.parentId] : null;
+  return `${twins && parent ? parent.name + '/' : ''}${n.name} clicked`;
+}
 
 export class UIRuntime {
   time = 0;
@@ -171,9 +188,13 @@ export class UIRuntime {
     else this.loops.delete(clipId);
   }
 
-  /** Nodes whose pointer events matter (triggers and hover/press effects) */
+  /** What the generated scripts would print (button clicks), newest last */
+  output: { text: string; time: number }[] = [];
+
+  /** Nodes whose pointer events matter (triggers, hover/press effects and button clicks) */
   interactiveIds(): Set<string> {
     const out = new Set<string>();
+    for (const n of clickButtons(this.doc)) out.add(n.id);
     for (const c of this.doc.clips) if (c.triggerNodeId && clipTrigger(c) !== 'load' && clipTrigger(c) !== 'manual') out.add(c.triggerNodeId);
     for (const n of Object.values(this.doc.nodes)) if (n.effects?.some((e) => e.kind === 'hoverScale' || e.kind === 'pressScale')) out.add(n.id);
     for (const n of Object.values(this.doc.nodes)) if (n.toast?.triggerNodeId) out.add(n.toast.triggerNodeId);
@@ -191,6 +212,9 @@ export class UIRuntime {
     const trig = EVENT_TRIGGER[ev];
     for (const c of this.doc.clips) if (clipTrigger(c) === trig && c.triggerNodeId === nodeId) this.play(c.id);
     if (ev === 'click') for (const n of Object.values(this.doc.nodes)) if (n.toast?.triggerNodeId === nodeId) this.showToast(n.id);
+    if (ev === 'click' && clickButtons(this.doc).some((n) => n.id === nodeId)) {
+      this.output = [...this.output.slice(-49), { text: clickMessage(this.doc, this.doc.nodes[nodeId]), time: Date.now() }];
+    }
   }
 
   tick(dt: number, layout: LayoutResult) {

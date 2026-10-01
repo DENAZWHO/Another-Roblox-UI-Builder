@@ -4,7 +4,7 @@
 import { clipLength } from '../model/animation';
 import { identifier, pathTo } from '../model/doc';
 import { CLASS_PROPS, isGuiObject, isWorldGui } from '../model/schema';
-import { clipTrigger, defaultFrom, MOUSE_RANGE, TOAST_GAP } from '../model/runtime';
+import { clickButtons, clickMessage, clipTrigger, defaultFrom, MOUSE_RANGE, TOAST_GAP } from '../model/runtime';
 import { designSize, pixelScaleOn } from '../model/pixelScale';
 import type { AnimClip, Doc, Effect, GuiNode, Tween } from '../model/types';
 import { luaValue, num } from './luau';
@@ -227,8 +227,22 @@ export function behaviorLines(doc: Doc, inScope: (id: string) => boolean, ref: (
     }
   }
 
+  lines.push(...clickLines(doc, inScope, ref, I));
+
   if (onLoad.length) lines.push(`${I}-- Play on load`, ...onLoad, '');
   return { lines, services, clipFns };
+}
+
+
+/** Every button's MouseButton1Click connected to a placeholder print */
+export function clickLines(doc: Doc, inScope: (id: string) => boolean, ref: (id: string) => string, I: string): string[] {
+  const buttons = clickButtons(doc).filter((n) => inScope(n.id));
+  if (!buttons.length) return [];
+  const lines = [`${I}-- Button clicks: replace the prints with your own code`];
+  for (const n of buttons) {
+    lines.push(`${I}${ref(n.id)}.MouseButton1Click:Connect(function()`, `${I}	print(${JSON.stringify(clickMessage(doc, n))})`, `${I}end)`);
+  }
+  return [...lines, ''];
 }
 
 function effectBlock(n: GuiNode, el: string, I: string): string[] {

@@ -35,6 +35,7 @@ export const SHORTCUT_GROUPS: ShortcutGroup[] = [
     items: [
       { label: 'Move / select', combos: one('V') },
       { label: 'Hand (pan)', combos: [['H'], ['Space', 'Drag']] },
+      { label: 'Pick colour from the screen', combos: one('C'), note: 'applies to the selection (fill, or text / image colour when it has no fill). Firefox / Safari: picks from a snapshot of the page, Esc or right-click cancels' },
       { label: 'Frame', combos: [['F'], ['R']] },
       { label: 'ScrollingFrame', combos: one('S') },
       { label: 'CanvasGroup', combos: one('G') },
@@ -55,6 +56,7 @@ export const SHORTCUT_GROUPS: ShortcutGroup[] = [
       { label: 'Copy', combos: one('Mod', 'C') },
       { label: 'Cut', combos: one('Mod', 'X') },
       { label: 'Paste', combos: one('Mod', 'V'), note: 'into the selected frame, or next to the original' },
+      { label: 'Paste an image as a reference', combos: one('Mod', 'V'), note: 'with a picture on the clipboard (e.g. a screenshot)' },
       { label: 'Duplicate', combos: one('Mod', 'D') },
       { label: 'Delete', combos: [['Delete'], ['Backspace']] },
       { label: 'Group into a Frame', combos: one('Mod', 'G') },
@@ -118,6 +120,8 @@ export const SHORTCUT_GROUPS: ShortcutGroup[] = [
       { label: 'Zoom to 100%', combos: [['Mod', '0'], ['Shift', '0']] },
       { label: 'Zoom to fit everything', combos: one('Shift', '1') },
       { label: 'Zoom to selection', combos: one('Shift', '2') },
+      { label: 'Show / hide reference images', combos: one('Shift', 'R') },
+      { label: 'Add a reference image', combos: one('Drop', 'an image file on the canvas') },
     ],
   },
   {

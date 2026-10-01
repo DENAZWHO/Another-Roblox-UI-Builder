@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { ChevronDown, Code, Hand, Keyboard, MousePointer2, Play, Redo2, Undo2, Cable, Menu, UserRound } from 'lucide-react';
+import { ChevronDown, Code, Hand, Keyboard, MousePointer2, Pipette, Play, Redo2, Undo2, Cable, Menu, UserRound } from 'lucide-react';
+import { pickColorForSelection } from './QuickBar';
 import { insertFragmentAt, insertionParent } from '../actions';
 import { PRESETS } from '../model/presets';
 import { useStore, type Tool } from '../store';
@@ -147,6 +148,9 @@ export function Toolbar() {
           </div>
           <div className={`tool ${tool === 'hand' ? 'on' : ''}`}>
             <button title="Hand (H) — or hold Space" onClick={() => setTool('hand')}><Hand size={16} /></button>
+          </div>
+          <div className="tool">
+            <button title="Pick colour (C) — from anywhere on the screen, e.g. a reference image. Applies to the selected element." onClick={() => pickColorForSelection()}><Pipette size={16} /></button>
           </div>
           <span className="tb-sep" />
           {TOOL_GROUPS.map((g) => <ToolGroup key={g.key} group={g} />)}

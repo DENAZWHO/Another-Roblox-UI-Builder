@@ -20,6 +20,8 @@ export interface State {
   lastCoalesce: { key: string; time: number } | null;
 
   selection: string[];
+  /** Selected reference image (references are selected separately from GUI objects) */
+  refSelection: string | null;
   hoverId: string | null;
   tool: Tool;
   mode: Mode;
@@ -59,6 +61,7 @@ export const useStore = create<State>()((set, get) => ({
   gestureBase: null,
   lastCoalesce: null,
   selection: [],
+  refSelection: null,
   hoverId: null,
   tool: 'move',
   mode: 'design',
@@ -129,6 +132,7 @@ export const useStore = create<State>()((set, get) => ({
       past: [],
       future: [],
       selection: [],
+      refSelection: null,
       activeClipId: doc.clips[0]?.id ?? '',
       playhead: 0,
       playing: false,
@@ -137,7 +141,7 @@ export const useStore = create<State>()((set, get) => ({
     });
   },
 
-  select: (ids) => set({ selection: ids, editingTextId: null }),
+  select: (ids) => set({ selection: ids, editingTextId: null, refSelection: null }),
   set: (partial) => set(partial),
   showToast: (text) => set({ toast: { text, id: Date.now() } }),
 }));
@@ -150,6 +154,7 @@ export function sanitize() {
   const tweenOk = clip?.tweens.some((t) => t.id === s.selectedTweenId);
   useStore.setState({
     selection,
+    refSelection: s.refSelection && s.doc.references?.some((r) => r.id === s.refSelection) ? s.refSelection : null,
     activeClipId: clip?.id ?? '',
     selectedTweenId: tweenOk ? s.selectedTweenId : null,
     hoverId: s.hoverId && s.doc.nodes[s.hoverId] ? s.hoverId : null,

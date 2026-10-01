@@ -1,7 +1,7 @@
 import { fontAssetUrl, weightName } from '../model/fonts';
 import { identifier } from '../model/doc';
 import { CLASS_PROPS, isWorldGui, type PropDef } from '../model/schema';
-import { adorneeExpr, behaviorLines, pixelScalerLines } from './behavior';
+import { adorneeExpr, behaviorLines, clickLines, pixelScalerLines } from './behavior';
 import { designSize, pixelScaleOn } from '../model/pixelScale';
 import { exportedProps } from '../model/richColors';
 import type { Doc, GuiNode } from '../model/types';
@@ -166,6 +166,11 @@ export function generateLuau(doc: Doc, opts: LuauOptions): string {
 
   if (pixelScaleOn(doc)) {
     for (const r of doc.rootIds) if (doc.nodes[r].className === 'ScreenGui') out.push('', ...pixelScalerLines(vars.get(r)!, designSize(doc), I));
+  }
+
+  if (!b) {
+    const clicks = clickLines(doc, () => true, (id) => vars.get(id)!, I);
+    if (clicks.length) out.push('', ...clicks);
   }
 
   if (b && b.lines.length) {

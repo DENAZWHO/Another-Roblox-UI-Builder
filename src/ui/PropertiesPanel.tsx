@@ -18,6 +18,7 @@ import { removeNode } from '../model/doc';
 import { ColorField, NumberField, RichTextField, Row, Segmented, SelectField, TextField, Toggle, UDim2Field, UDimField, Vec2Field } from './fields';
 import { ClassIcon } from './icons';
 import { RichColorEditor } from './RichColorEditor';
+import { ReferenceProps } from './References';
 import { useEffectiveNodes, useFontEpoch } from './hooks';
 import { computeLayout } from '../model/layout';
 import type { Doc } from '../model/types';
@@ -29,6 +30,7 @@ export function PropertiesPanel() {
   const doc = useStore((s) => s.doc);
   const nodes = useEffectiveNodes();
   const sel = selection.filter((id) => nodes[id]);
+  const refSel = useStore((s) => s.refSelection);
   const tween = mode === 'animate' && tweenId ? doc.clips.flatMap((c) => c.tweens).find((t) => t.id === tweenId) : undefined;
 
   return (
@@ -39,7 +41,7 @@ export function PropertiesPanel() {
       <div className="props-scroll">
         {mode === 'animate' && <ClipSettings />}
         {tween && <TweenInspector tween={tween} />}
-        {!sel.length ? <DocumentProps /> : <SelectionProps ids={sel} nodes={nodes} />}
+        {refSel && !sel.length ? <ReferenceProps id={refSel} /> : !sel.length ? <DocumentProps /> : <SelectionProps ids={sel} nodes={nodes} />}
       </div>
     </aside>
   );

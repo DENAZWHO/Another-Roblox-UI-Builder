@@ -11,6 +11,7 @@ import { zoomToSelection } from './viewport';
 import { PREFAB_DRAG_TYPE, PrefabsSection } from './PrefabsPanel';
 import { prefabs } from '../model/prefabs';
 import { elementFragment, startDragPreview } from './DragPreview';
+import { ReferencesSection } from './References';
 
 export function LeftPanel() {
   const tab = useStore((s) => s.leftTab);
@@ -195,6 +196,7 @@ function Layers() {
       <div className="layer-list" onClick={(e) => e.target === e.currentTarget && useStore.getState().select([])}>
         {doc.rootIds.map((r) => renderRow(r, 0))}
       </div>
+      <ReferencesSection />
     </div>
   );
 }

@@ -4,6 +4,7 @@ import { deserialize, emptyDoc, insertFragment, serialize } from './model/doc';
 import { parseRbxmx } from './export/rbxmx';
 import { insertionParent, batch } from './actions';
 import type { Doc } from './model/types';
+import { loadRefImages, pruneRefImages, putRefImage, refImageSrc } from './model/refImages';
 
 const AUTOSAVE_KEY = 'rbx-ui-builder:doc:v1';
 
@@ -35,9 +36,19 @@ export function projectName() {
   return doc.nodes[doc.rootIds[0]]?.name ?? 'ui';
 }
 
+/** Project file: the document plus the pictures of its reference images */
+export function projectJson(doc: Doc): string {
+  const refImages: Record<string, string> = {};
+  for (const r of doc.references ?? []) {
+    const src = refImageSrc(r.imageId);
+    if (src) refImages[r.imageId] = src;
+  }
+  return serialize({ app: 'roblox-ui-builder', version: 1, doc, ...(Object.keys(refImages).length ? { refImages } : {}) });
+}
+
 export function saveProject() {
   const { doc } = useStore.getState();
-  download(`${projectName()}.uibuilder.json`, serialize({ app: 'roblox-ui-builder', version: 1, doc }), 'application/json');
+  download(`${projectName()}.uibuilder.json`, projectJson(doc), 'application/json');
 }
 
 export async function openProject() {
@@ -47,6 +58,7 @@ export async function openProject() {
     const data = deserialize<any>(await f.text());
     const doc = data.doc ?? data;
     if (!validDoc(doc)) throw new Error('not a UI Builder project');
+    for (const [id, src] of Object.entries((data.refImages ?? {}) as Record<string, string>)) putRefImage(src, id);
     useStore.getState().loadDoc(doc);
     useStore.getState().showToast(`Opened ${f.name}`);
   } catch (e) {
@@ -113,5 +125,16 @@ export function startAutosave() {
         /* storage full or unavailable (large preview images) */
       }
     }, 500);
+  });
+}
+
+/** Load reference pictures as documents need them; forget ones nothing uses (once, at startup) */
+export function startRefImages() {
+  const ids = (d: Doc) => (d.references ?? []).map((r) => r.imageId);
+  const initial = useStore.getState().doc;
+  loadRefImages(ids(initial));
+  pruneRefImages(new Set(ids(initial)));
+  return useStore.subscribe((s, prev) => {
+    if (s.doc.references !== prev.doc.references) loadRefImages(ids(s.doc));
   });
 }

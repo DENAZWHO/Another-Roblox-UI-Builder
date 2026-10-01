@@ -4,13 +4,12 @@ import { keyLabel, MOUSE_WORDS, SHORTCUT_GROUPS, type Shortcut } from './shortcu
 import { useStore } from '../store';
 import { generateLuau } from '../export/luau';
 import { generateRbxmx } from '../export/rbxmx';
-import { serialize } from '../model/doc';
 import { computeLayout } from '../model/layout';
-import { UIRuntime, clipTrigger } from '../model/runtime';
+import { UIRuntime, clickButtons, clipTrigger } from '../model/runtime';
 import { applyPixelScale, pixelScaleFactor } from '../model/pixelScale';
 import { TRIGGER_LABELS } from './labels';
 import { DEVICES, isGuiObject, isWorldGui } from '../model/schema';
-import { download, projectName } from '../files';
+import { download, projectJson, projectName } from '../files';
 import { pushToStudio, useSyncStatus } from '../sync';
 import { ScreenView, TopbarMock, type RenderCtx } from './render';
 import { useFontEpoch } from './hooks';
@@ -78,12 +77,12 @@ function ExportDialog() {
   const [behavior, setBehavior] = useState(true);
   const [copied, setCopied] = useState(false);
   const hasBehavior =
-    doc.scalePixels !== false || doc.clips.some((c) => c.tweens.length) || Object.values(doc.nodes).some((n) => n.effects?.length || n.avatar || n.bind || n.adornee || n.toast);
+    doc.scalePixels !== false || clickButtons(doc).length > 0 || doc.clips.some((c) => c.tweens.length) || Object.values(doc.nodes).some((n) => n.effects?.length || n.avatar || n.bind || n.adornee || n.toast);
 
   const code = useMemo(() => {
     if (tab === 'luau') return generateLuau(doc, { style, behavior });
     if (tab === 'rbxmx') return generateRbxmx(doc, { behaviorScript: behavior });
-    return serialize({ app: 'roblox-ui-builder', version: 1, doc });
+    return projectJson(doc);
   }, [tab, doc, style, behavior]);
 
   const name = projectName();
@@ -122,6 +121,7 @@ function ExportDialog() {
         {tab !== 'json' && hasBehavior && (
           <Toggle value={behavior} onChange={setBehavior} label={tab === 'rbxmx' ? 'Include behaviour LocalScript (animations, effects, avatars, pixel scaling)' : 'Include animations, effects & avatars'} />
         )}
+        {tab !== 'json' && <ClickPrintsToggle />}
       </div>
       <p className="hint export-hint">
         {tab === 'luau' && style === 'localscript' && <>Paste into a <b>LocalScript</b> in <code>StarterPlayerScripts</code>. It builds the UI with <code>Instance.new</code> at runtime.</>}
@@ -136,6 +136,21 @@ function ExportDialog() {
 
 // ---------------------------------------------------------------------------
 // Studio plugin sync
+
+/** Doc setting: generated scripts print when each button is clicked */
+function ClickPrintsToggle() {
+  const on = useStore((s) => s.doc.clickPrints !== false);
+  const count = useStore((s) => Object.values(s.doc.nodes).filter((n) => n.className === 'TextButton' || n.className === 'ImageButton').length);
+  return (
+    <span title="Each TextButton / ImageButton gets MouseButton1Click:Connect(function() print(&quot;Name clicked&quot;) end) — a stub to put your own code in">
+      <Toggle
+        value={on}
+        onChange={(v) => useStore.getState().update((d) => void (d.clickPrints = v))}
+        label={`Connect buttons: print on MouseButton1Click${count ? ` (${count})` : ''}`}
+      />
+    </span>
+  );
+}
 
 function StudioDialog() {
   const live = useStore((s) => s.liveSync);
@@ -162,6 +177,7 @@ function StudioDialog() {
         Adding or deleting instances in Studio isn't synced back — do that here.
       </p>
       <div className="sync-actions">
+        <ClickPrintsToggle />
         <Toggle
           value={live}
           onChange={(v) => {
@@ -293,6 +309,34 @@ function PreviewDialog() {
               {!viewRoot && doc.showTopbar && <TopbarMock />}
             </div>
           </div>
+        )}
+        {clickButtons(doc).length > 0 && <PreviewOutput lines={runtime.output} />}
+      </div>
+    </div>
+  );
+}
+
+/** Studio-style Output window with what the generated scripts print */
+function PreviewOutput({ lines }: { lines: { text: string; time: number }[] }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const last = lines[lines.length - 1]?.time;
+  useEffect(() => {
+    ref.current?.scrollTo({ top: ref.current.scrollHeight });
+  }, [last]);
+  const stamp = (t: number) => new Date(t).toLocaleTimeString([], { hour12: false }) + '.' + String(t % 1000).padStart(3, '0');
+  return (
+    <div className="preview-output">
+      <div className="preview-output-title">Output</div>
+      <div className="preview-output-lines" ref={ref}>
+        {lines.length === 0 ? (
+          <div className="muted">Click a button — its MouseButton1Click print shows up here.</div>
+        ) : (
+          lines.map((l, i) => (
+            <div key={i}>
+              <span className="muted">{stamp(l.time)}  </span>
+              {l.text}
+            </div>
+          ))
         )}
       </div>
     </div>

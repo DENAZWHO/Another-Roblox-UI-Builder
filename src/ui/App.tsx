@@ -7,12 +7,15 @@ import { PropertiesPanel } from './PropertiesPanel';
 import { Timeline } from './Timeline';
 import { ContextMenu, Dialogs, Toast } from './Dialogs';
 import { DragPreview, canvasDropParent } from './DragPreview';
+import { pickColorForSelection } from './QuickBar';
+import { isEyedropping } from './eyedropper';
 import { zoomAt, zoomToFit, zoomToSelection } from './viewport';
 import {
   copySelection, savePrefabFromSelection, cutSelection, deleteSelection, duplicateSelection, groupSelection, nudge, pasteClipboard,
   reorder, selectAll, toggleLocked, toggleVisible, ungroupSelection,
 } from '../actions';
 import { openProject, saveProject } from '../files';
+import { addReference, getReference, isImageFile, removeReference, selectReference, toggleAllReferences, updateReference } from '../references';
 import { isGuiObject, isRoot } from '../model/schema';
 import { clipLength } from '../model/animation';
 
@@ -28,16 +31,29 @@ function isTyping() {
 
 function onKeyDown(e: KeyboardEvent) {
   const s = useStore.getState();
-  if (s.dialog || isTyping() || s.editingTextId) return;
+  if (s.dialog || isTyping() || s.editingTextId || isEyedropping()) return;
   const mod = e.ctrlKey || e.metaKey;
   const k = e.key.toLowerCase();
   const done = () => e.preventDefault();
+
+  // a selected reference image
+  const ref = getReference(s.refSelection);
+  if (ref && !mod) {
+    if (k === 'delete' || k === 'backspace') return done(), removeReference(ref.id);
+    if (k === 'escape') return done(), selectReference(null);
+    if (k.startsWith('arrow') && !ref.locked) {
+      done();
+      const d = e.shiftKey ? 10 : 1;
+      return updateReference(ref.id, { x: ref.x + (k === 'arrowleft' ? -d : k === 'arrowright' ? d : 0), y: ref.y + (k === 'arrowup' ? -d : k === 'arrowdown' ? d : 0) }, 'refnudge');
+    }
+  }
+  if (e.shiftKey && !mod && !e.altKey && e.code === 'KeyR') return done(), toggleAllReferences();
 
   if (mod && k === 'z') return done(), e.shiftKey ? s.redo() : s.undo();
   if (mod && k === 'y') return done(), s.redo();
   if (mod && k === 'c') return done(), copySelection();
   if (mod && k === 'x') return done(), cutSelection();
-  if (mod && k === 'v') return done(), pasteClipboard();
+  if (mod && k === 'v') return; // handled by onPaste
   if (mod && k === 'd') return done(), duplicateSelection();
   if (mod && e.altKey && e.code === 'KeyK') return done(), savePrefabFromSelection();
   if (mod && k === 'g') return done(), e.shiftKey ? ungroupSelection() : groupSelection();
@@ -93,7 +109,18 @@ function onKeyDown(e: KeyboardEvent) {
     if (!s.playing && s.playhead >= clipLength(clip) - 0.001) useStore.setState({ playhead: 0 });
     return useStore.setState({ playing: !s.playing });
   }
+  if (k === 'c' && !e.altKey && !e.shiftKey) return done(), pickColorForSelection();
   if (!e.altKey && TOOL_KEYS[k]) return useStore.setState({ tool: TOOL_KEYS[k] });
+}
+
+/** Ctrl+V: an image on the clipboard becomes a reference; otherwise paste copied elements */
+function onPaste(e: ClipboardEvent) {
+  const s = useStore.getState();
+  if (s.dialog || isTyping() || s.editingTextId) return;
+  e.preventDefault();
+  const image = Array.from(e.clipboardData?.items ?? []).find((i) => i.kind === 'file' && i.type.startsWith('image/'))?.getAsFile();
+  if (image) addReference(image, { name: 'Pasted image' });
+  else pasteClipboard();
 }
 
 export function App() {
@@ -102,17 +129,28 @@ export function App() {
 
   useEffect(() => {
     window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
+    window.addEventListener('paste', onPaste);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('paste', onPaste);
+    };
   }, []);
 
   // drag an element or a prefab from the Insert panel onto the canvas
   const onDrop = (e: React.DragEvent) => {
-    if (!isInsertDrag(e)) return;
-    e.preventDefault();
     const s = useStore.getState();
     const b = (e.currentTarget as HTMLElement).getBoundingClientRect();
     const wx = (e.clientX - b.left - s.pan.x) / s.zoom;
     const wy = (e.clientY - b.top - s.pan.y) / s.zoom;
+    // image files from the desktop become reference images
+    const images = Array.from(e.dataTransfer.files).filter(isImageFile);
+    if (images.length) {
+      e.preventDefault();
+      images.forEach((f, i) => addReference(f, { at: { x: wx + i * 24, y: wy + i * 24 } }));
+      return;
+    }
+    if (!isInsertDrag(e)) return;
+    e.preventDefault();
     insertDropped(e.dataTransfer, canvasDropParent(e.clientX, e.clientY), { x: wx, y: wy });
   };
 
@@ -125,7 +163,7 @@ export function App() {
           <div
             className="canvas-wrap"
             onDragOver={(e) => {
-              if (isInsertDrag(e)) {
+              if (isInsertDrag(e) || e.dataTransfer.types.includes('Files')) {
                 e.preventDefault();
                 e.dataTransfer.dropEffect = 'copy';
               }

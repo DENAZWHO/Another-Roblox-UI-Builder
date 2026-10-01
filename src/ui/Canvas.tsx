@@ -8,6 +8,9 @@ import { applyPixelScale, pixelScaleFactor } from '../model/pixelScale';
 import type { GuiNode, Rect } from '../model/types';
 import { insertNode, moveIntoFrame, patchNodes, reorderInStack, stackOrder, placeNodes, setCornerRadius, setProp, setProps } from '../actions';
 import { ScreenView, TopbarMock, type RenderCtx } from './render';
+import { RefLayer, RefSelectionBox, dragReference } from './References';
+import { QuickBar } from './QuickBar';
+import { referenceAt, selectReference } from '../references';
 import { viewport, zoomAt, zoomToFit } from './viewport';
 
 type Handle = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw';
@@ -262,6 +265,13 @@ export function Canvas() {
     }
 
     const target = resolveTarget(full, e.ctrlKey || e.metaKey);
+    // nothing of the UI here: a reference image can be picked up and moved
+    const refHit = !target && !e.shiftKey ? referenceAt(w.x, w.y) : null;
+    if (refHit) {
+      selectReference(refHit);
+      dragReference(e, refHit, 'move');
+      return;
+    }
     if (!target) {
       gesture.current = { kind: 'marquee', x0: w.x, y0: w.y, additive: e.shiftKey, base: e.shiftKey ? s.selection : [] };
       if (!e.shiftKey) s.select([]);
@@ -701,11 +711,15 @@ export function Canvas() {
       onContextMenu={onContextMenu}
     >
       <div className="world" style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }}>
+        {/* references behind the UI: outside the screen here, inside it below (over the artboard's checkerboard) */}
+        <RefLayer placement="behind" />
         <div className="artboard" style={{ width: doc.device.w, height: doc.device.h, overflow: clipArtboard ? 'hidden' : 'visible' }}>
+          <RefLayer placement="behind" />
           {doc.rootIds.filter((id) => !worldRoots.includes(id)).map((id) => <ScreenView key={id} id={id} ctx={ctx} />)}
           {doc.showTopbar && <TopbarMock title="Roblox top bar (58px inset). Toggle it in the Document panel." />}
         </div>
         {worldRoots.map((id) => <ScreenView key={id} id={id} ctx={ctx} />)}
+        <RefLayer placement="over" />
       </div>
 
       <div className="overlay">
@@ -791,6 +805,8 @@ export function Canvas() {
             <span>Move into {nodes[dropTarget]?.name}</span>
           </div>
         )}
+        <RefSelectionBox />
+        {single && layout.rects[single] ? <QuickBar rect={toScreen(layout.rects[single])} /> : unionSel && <QuickBar rect={unionSel} />}
         {radiusBadge && <div className="rec-badge radius">{radiusBadge}</div>}
         {recording && <div className="rec-badge">● Recording keyframes at {playhead.toFixed(2)}s — edits create tweens</div>}
       </div>

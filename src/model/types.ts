@@ -160,4 +160,29 @@ export interface Doc {
   designSize?: { w: number; h: number };
   /** Scale pixel values with the screen size (default on) */
   scalePixels?: boolean;
+  /** Generated scripts connect every button's MouseButton1Click to a print (default on) */
+  clickPrints?: boolean;
+  /** Reference images (editor only: never exported or synced) */
+  references?: RefImage[];
+}
+
+/** A picture to design against, e.g. a mockup or a screenshot of the game, placed on the canvas */
+export interface RefImage {
+  id: string;
+  name: string;
+  /** Pixel data lives in IndexedDB (model/refImages.ts) */
+  imageId: string;
+  /** Canvas rect (the screen artboard is at 0,0) */
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  /** Original image size */
+  natW: number;
+  natH: number;
+  opacity: number;
+  /** Behind the UI (a background to build on) or over it (to trace / compare) */
+  placement: 'behind' | 'over';
+  hidden?: boolean;
+  locked?: boolean;
 }
