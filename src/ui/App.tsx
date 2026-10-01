@@ -1,23 +1,20 @@
 import { useEffect } from 'react';
 import { useStore, type Tool } from '../store';
 import { Toolbar } from './Toolbar';
-import { LeftPanel, INSERT_DRAG_TYPE } from './LayersPanel';
-import { PREFAB_DRAG_TYPE } from './PrefabsPanel';
-import { prefabs } from '../model/prefabs';
+import { LeftPanel, insertDropped, isInsertDrag } from './LayersPanel';
 import { Canvas } from './Canvas';
 import { PropertiesPanel } from './PropertiesPanel';
 import { Timeline } from './Timeline';
 import { ContextMenu, Dialogs, Toast } from './Dialogs';
 import { zoomAt, zoomToFit, zoomToSelection } from './viewport';
 import {
-  batch, copySelection, insertPrefab, savePrefabFromSelection, cutSelection, deleteSelection, layoutNow, placeNodes, duplicateSelection, groupSelection, insertNode, nudge, pasteClipboard,
+  copySelection, savePrefabFromSelection, cutSelection, deleteSelection, layoutNow, duplicateSelection, groupSelection, nudge, pasteClipboard,
   reorder, selectAll, toggleLocked, toggleVisible, ungroupSelection,
 } from '../actions';
 import { openProject, saveProject } from '../files';
 import { pathTo } from '../model/doc';
 import { CONTAINER_CLASSES, isGuiObject, isRoot } from '../model/schema';
 import { clipLength } from '../model/animation';
-import type { GuiObjectClass } from '../model/types';
 
 const TOOL_KEYS: Record<string, Tool> = {
   v: 'move', h: 'hand', f: 'Frame', r: 'Frame', s: 'ScrollingFrame', g: 'CanvasGroup', t: 'TextLabel',
@@ -110,9 +107,7 @@ export function App() {
 
   // drag an element or a prefab from the Insert panel onto the canvas
   const onDrop = (e: React.DragEvent) => {
-    const cls = e.dataTransfer.getData(INSERT_DRAG_TYPE) as GuiObjectClass;
-    const prefabId = e.dataTransfer.getData(PREFAB_DRAG_TYPE);
-    if (!cls && !prefabId) return;
+    if (!isInsertDrag(e)) return;
     e.preventDefault();
     const s = useStore.getState();
     const b = (e.currentTarget as HTMLElement).getBoundingClientRect();
@@ -129,17 +124,7 @@ export function App() {
       const backdrop = screen && r && r.w * r.h >= 0.6 * screen.w * screen.h;
       if (CONTAINER_CLASSES.includes(s.doc.nodes[id].className) && !s.doc.nodes[id].locked && !backdrop) parentId = id;
     }
-    if (prefabId) {
-      const p = prefabs().find((x) => x.id === prefabId);
-      if (p) insertPrefab(p, { parentId, at: { x: wx, y: wy } });
-      return;
-    }
-    batch(() => {
-      const id = insertNode(cls, { parentId });
-      const lay = layoutNow();
-      const r = lay.rects[id];
-      if (r && !lay.laidOut.has(id)) placeNodes([{ id, rect: { ...r, x: Math.round(wx - r.w / 2), y: Math.round(wy - r.h / 2) } }], lay);
-    });
+    insertDropped(e.dataTransfer, parentId, { x: wx, y: wy });
   };
 
   return (
@@ -151,7 +136,7 @@ export function App() {
           <div
             className="canvas-wrap"
             onDragOver={(e) => {
-              if (e.dataTransfer.types.includes(INSERT_DRAG_TYPE) || e.dataTransfer.types.includes(PREFAB_DRAG_TYPE)) {
+              if (isInsertDrag(e)) {
                 e.preventDefault();
                 e.dataTransfer.dropEffect = 'copy';
               }

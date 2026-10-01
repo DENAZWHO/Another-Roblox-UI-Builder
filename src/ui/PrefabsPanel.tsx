@@ -1,4 +1,4 @@
-import { memo, useMemo, useState, useSyncExternalStore } from 'react';
+import { memo, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { Download, Plus, RefreshCw, Trash, Upload } from 'lucide-react';
 import { useStore } from '../store';
 import { computeLayout } from '../model/layout';
@@ -99,7 +99,7 @@ function PrefabCard({ prefab }: { prefab: Prefab }) {
   );
 }
 
-export function PrefabsSection() {
+export function PrefabsSection({ intoLabel }: { intoLabel?: ReactNode }) {
   const list = usePrefabs();
   const selection = useStore((s) => s.selection);
   const doc = useStore((s) => s.doc);
@@ -127,7 +127,7 @@ export function PrefabsSection() {
   return (
     <>
       <div className="insert-title prefab-title">
-        My prefabs
+        <span>My prefabs {intoLabel}</span>
         <span className="prefab-tools">
           <button title="Import prefabs from a file" onClick={importFile}><Upload size={12} /></button>
           {list.length > 0 && (

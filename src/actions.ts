@@ -128,12 +128,16 @@ export function toggleLocked(id: string) {
 // ---------------------------------------------------------------------------
 // Inserting
 
-/** Where new elements go: inside a selected container, next to a selected element, or in the first ScreenGui */
-export function insertionParent(): string {
+/**
+ * Where new elements go: inside a selected container, next to a selected element, or in the first ScreenGui.
+ * `into`: inserting from the Insert panel goes inside whatever single element is selected (any GuiObject can hold children).
+ */
+export function insertionParent(opts: { into?: boolean } = {}): string {
   const { selection, doc } = S();
   if (selection.length === 1) {
     const n = doc.nodes[selection[0]];
     if (isRoot(n.className) || CONTAINER_CLASSES.includes(n.className)) return n.id;
+    if (opts.into && isGuiObject(n.className)) return n.id;
     if (isModifier(n.className)) return n.parentId!;
     if (n.parentId) return n.parentId;
   }
@@ -999,9 +1003,19 @@ export function updatePrefabFromSelection(id: string) {
 
 /** Insert a prefab (centred in the target, or centred on a canvas point) */
 export function insertPrefab(prefab: Prefab, opts: { parentId?: string; at?: { x: number; y: number } } = {}) {
+  return insertFragmentAtPoint(structuredClone(prefab.fragment), opts);
+}
+
+/** Insert a built-in component (from the Insert panel) — inside the selected element, or centred on a drop point */
+export function insertComponent(preset: { build: () => Fragment }, opts: { parentId?: string; at?: { x: number; y: number } } = {}) {
+  return insertFragmentAtPoint(preset.build(), opts);
+}
+
+/** Insert a fragment centred in its parent, or centred on a canvas point when dropped there */
+export function insertFragmentAtPoint(fragment: Fragment, opts: { parentId?: string; at?: { x: number; y: number } } = {}) {
   return batch(() => {
-    const parentId = opts.parentId ?? insertionParent();
-    const roots = insertFragmentAt(structuredClone(prefab.fragment), parentId, !opts.at);
+    const parentId = opts.parentId ?? insertionParent({ into: true });
+    const roots = insertFragmentAt(fragment, parentId, !opts.at);
     if (opts.at) {
       const lay = layoutNow();
       const rects = roots.map((r) => lay.rects[r]).filter(Boolean);

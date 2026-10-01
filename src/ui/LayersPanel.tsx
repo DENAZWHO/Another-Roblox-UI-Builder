@@ -3,12 +3,13 @@ import { ChevronDown, ChevronRight, Eye, EyeOff, Lock, LockOpen, Plus, Search, X
 import { useStore } from '../store';
 import { isGuiObject, isModifier, GUI_OBJECT_CLASSES, MODIFIER_CLASSES, modifierAllowed, isRoot } from '../model/schema';
 import { pathTo } from '../model/doc';
-import type { GuiNode, ModifierClass } from '../model/types';
-import { addModifier, insertFragmentAt, insertionParent, insertNode, insertRoot, moveNodes, rename, toggleLocked, toggleVisible } from '../actions';
+import type { GuiNode, GuiObjectClass, ModifierClass } from '../model/types';
+import { addModifier, insertionParent, insertNode, insertRoot, moveNodes, rename, toggleLocked, toggleVisible, batch, insertComponent, insertPrefab, layoutNow, placeNodes } from '../actions';
 import { ClassIcon } from './icons';
 import { PRESETS } from '../model/presets';
 import { zoomToSelection } from './viewport';
-import { PrefabsSection } from './PrefabsPanel';
+import { PREFAB_DRAG_TYPE, PrefabsSection } from './PrefabsPanel';
+import { prefabs } from '../model/prefabs';
 
 export function LeftPanel() {
   const tab = useStore((s) => s.leftTab);
@@ -70,7 +71,13 @@ function Layers() {
   };
 
   const onDragOver = (e: React.DragEvent, n: GuiNode) => {
-    if (!dragIds.current.length) return;
+    if (!dragIds.current.length) {
+      if (!isInsertDrag(e) || !(isRoot(n.className) || isGuiObject(n.className))) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+      if (!drop || drop.id !== n.id || drop.zone !== 'inside') setDrop({ id: n.id, zone: 'inside' });
+      return;
+    }
     e.preventDefault();
     const b = (e.currentTarget as HTMLElement).getBoundingClientRect();
     const y = (e.clientY - b.top) / b.height;
@@ -85,9 +92,14 @@ function Layers() {
     if (!drop || drop.id !== n.id || drop.zone !== zone) setDrop({ id: n.id, zone });
   };
 
-  const onDrop = () => {
+  const onDrop = (e: React.DragEvent) => {
     const d = drop;
     setDrop(null);
+    if (d && !dragIds.current.length && isInsertDrag(e)) {
+      e.preventDefault();
+      insertDropped(e.dataTransfer, d.id);
+      return;
+    }
     if (!d || !dragIds.current.length) return;
     const t = doc.nodes[d.id];
     if (d.zone === 'inside') {
@@ -238,15 +250,44 @@ const ELEMENT_INFO: Record<string, string> = {
 };
 
 export const INSERT_DRAG_TYPE = 'application/x-rbx-insert';
+export const COMPONENT_DRAG_TYPE = 'application/x-rbx-component';
+
+/** Something dragged from the Insert panel (element, component or prefab)? */
+export const isInsertDrag = (e: React.DragEvent) =>
+  [INSERT_DRAG_TYPE, COMPONENT_DRAG_TYPE, PREFAB_DRAG_TYPE].some((t) => e.dataTransfer.types.includes(t));
+
+/** Insert whatever was dragged from the Insert panel into `parentId` (optionally centred on a canvas point) */
+export function insertDropped(data: DataTransfer, parentId: string, at?: { x: number; y: number }) {
+  const cls = data.getData(INSERT_DRAG_TYPE) as GuiObjectClass;
+  const componentId = data.getData(COMPONENT_DRAG_TYPE);
+  const prefabId = data.getData(PREFAB_DRAG_TYPE);
+  if (componentId) {
+    const p = PRESETS.find((x) => x.id === componentId);
+    if (p) insertComponent(p, { parentId, at });
+  } else if (prefabId) {
+    const p = prefabs().find((x) => x.id === prefabId);
+    if (p) insertPrefab(p, { parentId, at });
+  } else if (cls) {
+    batch(() => {
+      const id = insertNode(cls, { parentId });
+      if (!at) return;
+      const lay = layoutNow();
+      const r = lay.rects[id];
+      if (r && !lay.laidOut.has(id)) placeNodes([{ id, rect: { ...r, x: Math.round(at.x - r.w / 2), y: Math.round(at.y - r.h / 2) } }], lay);
+    });
+  }
+}
 
 function InsertPanel() {
   const selection = useStore((s) => s.selection);
   const doc = useStore((s) => s.doc);
   const targets = selection.filter((id) => doc.nodes[id] && (isGuiObject(doc.nodes[id].className) || isRoot(doc.nodes[id].className)));
+  const into = doc.nodes[insertionParent({ into: true })];
+  const intoLabel = into ? <span className="muted insert-into" title="New elements, components and prefabs go inside this (select something in Layers to change it)">→ {into.name}</span> : null;
   return (
     <div className="insert">
-      <PrefabsSection />
-      <div className="insert-title">Elements</div>
+      <PrefabsSection intoLabel={intoLabel} />
+      <div className="insert-title">Elements {intoLabel}</div>
       <div className="insert-grid">
         {GUI_OBJECT_CLASSES.map((c) => (
           <button
@@ -258,7 +299,7 @@ function InsertPanel() {
               e.dataTransfer.setData(INSERT_DRAG_TYPE, c);
               e.dataTransfer.effectAllowed = 'copy';
             }}
-            onClick={() => insertNode(c, { parentId: insertionParent() })}
+            onClick={() => insertNode(c, { parentId: insertionParent({ into: true }) })}
           >
             <ClassIcon cls={c} size={18} />
             <span className="insert-name">{c}</span>
@@ -280,10 +321,20 @@ function InsertPanel() {
           );
         })}
       </div>
-      <div className="insert-title">Components</div>
+      <div className="insert-title">Components {intoLabel}</div>
       <div className="insert-list">
         {PRESETS.map((p) => (
-          <button key={p.id} className="insert-row preset" onClick={() => insertFragmentAt(p.build(), insertionParent())}>
+          <button
+            key={p.id}
+            className="insert-row preset"
+            title={`${p.name} — click to insert, or drag onto the canvas or a layer`}
+            draggable
+            onDragStart={(e) => {
+              e.dataTransfer.setData(COMPONENT_DRAG_TYPE, p.id);
+              e.dataTransfer.effectAllowed = 'copy';
+            }}
+            onClick={() => insertComponent(p)}
+          >
             <span className="preset-name">{p.name}</span>
             <span className="insert-desc">{p.description}</span>
           </button>
