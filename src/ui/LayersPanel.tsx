@@ -4,12 +4,13 @@ import { useStore } from '../store';
 import { isGuiObject, isModifier, GUI_OBJECT_CLASSES, MODIFIER_CLASSES, modifierAllowed, isRoot } from '../model/schema';
 import { pathTo } from '../model/doc';
 import type { GuiNode, GuiObjectClass, ModifierClass } from '../model/types';
-import { addModifier, insertionParent, insertNode, insertRoot, moveNodes, rename, toggleLocked, toggleVisible, batch, insertComponent, insertPrefab, layoutNow, placeNodes } from '../actions';
+import { addModifier, insertionParent, insertNode, insertRoot, moveNodes, rename, toggleLocked, toggleVisible, batch, insertComponent, insertPrefab, layoutNow, placeNodes, reorderInStack, stackDropIndex, stackLayout } from '../actions';
 import { ClassIcon } from './icons';
 import { PRESETS } from '../model/presets';
 import { zoomToSelection } from './viewport';
 import { PREFAB_DRAG_TYPE, PrefabsSection } from './PrefabsPanel';
 import { prefabs } from '../model/prefabs';
+import { elementFragment, startDragPreview } from './DragPreview';
 
 export function LeftPanel() {
   const tab = useStore((s) => s.leftTab);
@@ -261,21 +262,28 @@ export function insertDropped(data: DataTransfer, parentId: string, at?: { x: nu
   const cls = data.getData(INSERT_DRAG_TYPE) as GuiObjectClass;
   const componentId = data.getData(COMPONENT_DRAG_TYPE);
   const prefabId = data.getData(PREFAB_DRAG_TYPE);
-  if (componentId) {
-    const p = PRESETS.find((x) => x.id === componentId);
-    if (p) insertComponent(p, { parentId, at });
-  } else if (prefabId) {
-    const p = prefabs().find((x) => x.id === prefabId);
-    if (p) insertPrefab(p, { parentId, at });
-  } else if (cls) {
-    batch(() => {
+  batch(() => {
+    // dropped on a stack (UIListLayout / UIGridLayout): slot in where the pointer is, like the preview showed
+    const slot = at && stackLayout(parentId) ? stackDropIndex(parentId, at) : null;
+    let roots: string[] = [];
+    if (componentId) {
+      const p = PRESETS.find((x) => x.id === componentId);
+      if (p) roots = insertComponent(p, { parentId, at });
+    } else if (prefabId) {
+      const p = prefabs().find((x) => x.id === prefabId);
+      if (p) roots = insertPrefab(p, { parentId, at });
+    } else if (cls) {
       const id = insertNode(cls, { parentId });
-      if (!at) return;
+      roots = [id];
       const lay = layoutNow();
       const r = lay.rects[id];
-      if (r && !lay.laidOut.has(id)) placeNodes([{ id, rect: { ...r, x: Math.round(at.x - r.w / 2), y: Math.round(at.y - r.h / 2) } }], lay);
-    });
-  }
+      if (at && r && !lay.laidOut.has(id)) placeNodes([{ id, rect: { ...r, x: Math.round(at.x - r.w / 2), y: Math.round(at.y - r.h / 2) } }], lay);
+    }
+    if (slot !== null && roots.length) {
+      reorderInStack(roots, slot);
+      useStore.getState().select(roots);
+    }
+  });
 }
 
 function InsertPanel() {
@@ -298,6 +306,7 @@ function InsertPanel() {
             onDragStart={(e) => {
               e.dataTransfer.setData(INSERT_DRAG_TYPE, c);
               e.dataTransfer.effectAllowed = 'copy';
+              startDragPreview(e, c, () => elementFragment(c));
             }}
             onClick={() => insertNode(c, { parentId: insertionParent({ into: true }) })}
           >
@@ -332,6 +341,7 @@ function InsertPanel() {
             onDragStart={(e) => {
               e.dataTransfer.setData(COMPONENT_DRAG_TYPE, p.id);
               e.dataTransfer.effectAllowed = 'copy';
+              startDragPreview(e, p.name, p.build);
             }}
             onClick={() => insertComponent(p)}
           >

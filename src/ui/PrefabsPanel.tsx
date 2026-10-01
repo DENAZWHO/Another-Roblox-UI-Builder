@@ -9,6 +9,7 @@ import { insertPrefab, savePrefabFromSelection, updatePrefabFromSelection } from
 import { download } from '../files';
 import { ScreenView, type RenderCtx } from './render';
 import { useFontEpoch } from './hooks';
+import { startDragPreview } from './DragPreview';
 
 export const PREFAB_DRAG_TYPE = 'application/x-rbx-prefab';
 const THUMB_W = 104;
@@ -52,6 +53,7 @@ function PrefabCard({ prefab }: { prefab: Prefab }) {
       onDragStart={(e) => {
         e.dataTransfer.setData(PREFAB_DRAG_TYPE, prefab.id);
         e.dataTransfer.effectAllowed = 'copy';
+        startDragPreview(e, prefab.name, () => structuredClone(prefab.fragment));
       }}
       onClick={() => !renaming && insertPrefab(prefab)}
     >

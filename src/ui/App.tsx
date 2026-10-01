@@ -6,14 +6,14 @@ import { Canvas } from './Canvas';
 import { PropertiesPanel } from './PropertiesPanel';
 import { Timeline } from './Timeline';
 import { ContextMenu, Dialogs, Toast } from './Dialogs';
+import { DragPreview, canvasDropParent } from './DragPreview';
 import { zoomAt, zoomToFit, zoomToSelection } from './viewport';
 import {
-  copySelection, savePrefabFromSelection, cutSelection, deleteSelection, layoutNow, duplicateSelection, groupSelection, nudge, pasteClipboard,
+  copySelection, savePrefabFromSelection, cutSelection, deleteSelection, duplicateSelection, groupSelection, nudge, pasteClipboard,
   reorder, selectAll, toggleLocked, toggleVisible, ungroupSelection,
 } from '../actions';
 import { openProject, saveProject } from '../files';
-import { pathTo } from '../model/doc';
-import { CONTAINER_CLASSES, isGuiObject, isRoot } from '../model/schema';
+import { isGuiObject, isRoot } from '../model/schema';
 import { clipLength } from '../model/animation';
 
 const TOOL_KEYS: Record<string, Tool> = {
@@ -113,18 +113,7 @@ export function App() {
     const b = (e.currentTarget as HTMLElement).getBoundingClientRect();
     const wx = (e.clientX - b.left - s.pan.x) / s.zoom;
     const wy = (e.clientY - b.top - s.pan.y) / s.zoom;
-    const el = (document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null)?.closest('[data-nid]') as HTMLElement | null;
-    const path = el ? pathTo(s.doc.nodes, el.dataset.nid!) : [];
-    let parentId = path[0] ?? s.doc.rootIds[0];
-    // drop into the deepest frame under the pointer, skipping full-screen backdrops (e.g. a Background frame)
-    const lay0 = layoutNow();
-    const screen = lay0.rects[path[0]];
-    for (const id of path) {
-      const r = lay0.rects[id];
-      const backdrop = screen && r && r.w * r.h >= 0.6 * screen.w * screen.h;
-      if (CONTAINER_CLASSES.includes(s.doc.nodes[id].className) && !s.doc.nodes[id].locked && !backdrop) parentId = id;
-    }
-    insertDropped(e.dataTransfer, parentId, { x: wx, y: wy });
+    insertDropped(e.dataTransfer, canvasDropParent(e.clientX, e.clientY), { x: wx, y: wy });
   };
 
   return (
@@ -152,6 +141,7 @@ export function App() {
       {dialog && <Dialogs />}
       <ContextMenu />
       <Toast />
+      <DragPreview />
     </div>
   );
 }

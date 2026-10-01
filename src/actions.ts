@@ -890,6 +890,28 @@ export function reorderInStack(ids: string[], index: number) {
   });
 }
 
+/** The slot (index among the stack's other children) that a canvas point falls into */
+export function stackDropIndex(parentId: string, pt: { x: number; y: number }, lay: LayoutResult = layoutNow(), exclude: string[] = []): number {
+  const stack = stackLayout(parentId);
+  if (!stack) return 0;
+  const siblings = stackOrder(parentId).filter((id) => !exclude.includes(id) && lay.rects[id]);
+  const vertical = stack.className === 'UIListLayout' ? stack.props.FillDirection !== 'Horizontal' : stack.props.FillDirection === 'Vertical';
+  const pos = (r: Rect) => (vertical ? r.y + r.h / 2 : r.x + r.w / 2);
+  const p = vertical ? pt.y : pt.x;
+  if (stack.className === 'UIGridLayout') {
+    // nearest cell, before or after it along the fill direction
+    let best = -1;
+    let bestD = Infinity;
+    siblings.forEach((id, i) => {
+      const r = lay.rects[id];
+      const d = Math.hypot(r.x + r.w / 2 - pt.x, r.y + r.h / 2 - pt.y);
+      if (d < bestD) [best, bestD] = [i, d];
+    });
+    return best < 0 ? 0 : best + (p > pos(lay.rects[siblings[best]]) ? 1 : 0);
+  }
+  return siblings.filter((id) => pos(lay.rects[id]) < p).length;
+}
+
 /** Move stacked elements one place earlier (-1) or later (+1) */
 export function stepInStack(ids: string[], delta: number) {
   const { doc } = S();

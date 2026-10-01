@@ -523,3 +523,12 @@ kbd { min-width: 18px; text-align: center; display: inline-block; }
 
 .stack-ghost { border: 1.5px dashed var(--accent); background: rgba(13, 153, 255, 0.12); border-radius: 3px; }
 .insert-line { background: var(--accent); border-radius: 2px; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.6); }
+
+/* live preview while dragging from the Insert panel */
+.drag-preview-layer { position: fixed; overflow: hidden; pointer-events: none; z-index: 900; }
+.drag-preview-layer .drop-target { pointer-events: none; }
+.drag-preview { position: absolute; transform-origin: 0 0; opacity: 0.85; pointer-events: none; }
+.drag-preview-outline { position: absolute; border: 1.5px dashed var(--accent); border-radius: 2px; pointer-events: none; }
+.drag-chip { position: fixed; z-index: 1000; pointer-events: none; display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 6px; background: var(--panel, #2c2c2c); border: 1px solid var(--accent); border-radius: 6px; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45); font-size: 11px; color: var(--text, #eee); }
+.drag-chip-thumb { position: relative; overflow: hidden; border-radius: 3px; background: repeating-conic-gradient(#2a2a2a 0 25%, #232323 0 50%) 0 0 / 12px 12px; }
+.drag-preview.sim { opacity: 1; }
