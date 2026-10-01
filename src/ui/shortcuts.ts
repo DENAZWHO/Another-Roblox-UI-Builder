@@ -58,6 +58,8 @@ export const SHORTCUT_GROUPS: ShortcutGroup[] = [
       { label: 'Duplicate', combos: one('Mod', 'D') },
       { label: 'Delete', combos: [['Delete'], ['Backspace']] },
       { label: 'Group into a Frame', combos: one('Mod', 'G') },
+      { label: 'Save selection as a prefab', combos: one('Mod', 'Alt', 'K') },
+      { label: 'Move into a frame', combos: one('Drag', 'onto the frame'), note: 'drag out of it to move it back out' },
       { label: 'Ungroup', combos: one('Mod', 'Shift', 'G') },
       { label: 'Hide / show', combos: one('Mod', 'Shift', 'H') },
       { label: 'Lock / unlock', combos: one('Mod', 'Shift', 'L') },
@@ -93,6 +95,7 @@ export const SHORTCUT_GROUPS: ShortcutGroup[] = [
       { label: 'Round corners', combos: one('Drag', 'a corner dot') },
       { label: 'Round corners in 4px steps', combos: one('Shift', 'Drag corner dot') },
       { label: 'Move a Billboard/SurfaceGui artboard', combos: one('Drag', 'its label') },
+      { label: 'Reorder inside a stack (UIListLayout / UIGridLayout)', combos: [['Drag'], ['Arrows']], note: 'drag outside the frame to take it out' },
     ],
   },
   {

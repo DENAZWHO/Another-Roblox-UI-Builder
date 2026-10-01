@@ -2,13 +2,15 @@ import { useEffect } from 'react';
 import { useStore, type Tool } from '../store';
 import { Toolbar } from './Toolbar';
 import { LeftPanel, INSERT_DRAG_TYPE } from './LayersPanel';
+import { PREFAB_DRAG_TYPE } from './PrefabsPanel';
+import { prefabs } from '../model/prefabs';
 import { Canvas } from './Canvas';
 import { PropertiesPanel } from './PropertiesPanel';
 import { Timeline } from './Timeline';
 import { ContextMenu, Dialogs, Toast } from './Dialogs';
 import { zoomAt, zoomToFit, zoomToSelection } from './viewport';
 import {
-  batch, copySelection, cutSelection, deleteSelection, layoutNow, placeNodes, duplicateSelection, groupSelection, insertNode, nudge, pasteClipboard,
+  batch, copySelection, insertPrefab, savePrefabFromSelection, cutSelection, deleteSelection, layoutNow, placeNodes, duplicateSelection, groupSelection, insertNode, nudge, pasteClipboard,
   reorder, selectAll, toggleLocked, toggleVisible, ungroupSelection,
 } from '../actions';
 import { openProject, saveProject } from '../files';
@@ -40,6 +42,7 @@ function onKeyDown(e: KeyboardEvent) {
   if (mod && k === 'x') return done(), cutSelection();
   if (mod && k === 'v') return done(), pasteClipboard();
   if (mod && k === 'd') return done(), duplicateSelection();
+  if (mod && e.altKey && e.code === 'KeyK') return done(), savePrefabFromSelection();
   if (mod && k === 'g') return done(), e.shiftKey ? ungroupSelection() : groupSelection();
   if (mod && k === 'a') return done(), selectAll();
   if (mod && k === 's') return done(), saveProject();
@@ -105,10 +108,11 @@ export function App() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, []);
 
-  // drag an element from the Insert panel onto the canvas
+  // drag an element or a prefab from the Insert panel onto the canvas
   const onDrop = (e: React.DragEvent) => {
     const cls = e.dataTransfer.getData(INSERT_DRAG_TYPE) as GuiObjectClass;
-    if (!cls) return;
+    const prefabId = e.dataTransfer.getData(PREFAB_DRAG_TYPE);
+    if (!cls && !prefabId) return;
     e.preventDefault();
     const s = useStore.getState();
     const b = (e.currentTarget as HTMLElement).getBoundingClientRect();
@@ -117,7 +121,19 @@ export function App() {
     const el = (document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null)?.closest('[data-nid]') as HTMLElement | null;
     const path = el ? pathTo(s.doc.nodes, el.dataset.nid!) : [];
     let parentId = path[0] ?? s.doc.rootIds[0];
-    for (const id of path) if (CONTAINER_CLASSES.includes(s.doc.nodes[id].className) && !s.doc.nodes[id].locked) parentId = id;
+    // drop into the deepest frame under the pointer, skipping full-screen backdrops (e.g. a Background frame)
+    const lay0 = layoutNow();
+    const screen = lay0.rects[path[0]];
+    for (const id of path) {
+      const r = lay0.rects[id];
+      const backdrop = screen && r && r.w * r.h >= 0.6 * screen.w * screen.h;
+      if (CONTAINER_CLASSES.includes(s.doc.nodes[id].className) && !s.doc.nodes[id].locked && !backdrop) parentId = id;
+    }
+    if (prefabId) {
+      const p = prefabs().find((x) => x.id === prefabId);
+      if (p) insertPrefab(p, { parentId, at: { x: wx, y: wy } });
+      return;
+    }
     batch(() => {
       const id = insertNode(cls, { parentId });
       const lay = layoutNow();
@@ -135,7 +151,7 @@ export function App() {
           <div
             className="canvas-wrap"
             onDragOver={(e) => {
-              if (e.dataTransfer.types.includes(INSERT_DRAG_TYPE)) {
+              if (e.dataTransfer.types.includes(INSERT_DRAG_TYPE) || e.dataTransfer.types.includes(PREFAB_DRAG_TYPE)) {
                 e.preventDefault();
                 e.dataTransfer.dropEffect = 'copy';
               }

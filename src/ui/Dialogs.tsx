@@ -17,7 +17,7 @@ import { useFontEpoch } from './hooks';
 import { Segmented, Toggle } from './fields';
 import { MenuItem, useClickOutside } from './Toolbar';
 import {
-  convertUnits, copySelection, makeResponsive, cutSelection, deleteSelection, duplicateSelection, groupSelection, pasteClipboard, reorder,
+  convertUnits, copySelection, makeResponsive, savePrefabFromSelection, cutSelection, deleteSelection, duplicateSelection, groupSelection, pasteClipboard, reorder,
   toggleLocked, toggleVisible, ungroupSelection,
 } from '../actions';
 
@@ -405,6 +405,7 @@ export function ContextMenu() {
       <MenuItem label="Bring to front" shortcut="Ctrl+]" disabled={!gui.length} onClick={run(() => reorder('front'))} />
       <MenuItem label="Send to back" shortcut="Ctrl+[" disabled={!gui.length} onClick={run(() => reorder('back'))} />
       <div className="menu-sep" />
+      <MenuItem label="Save as prefab" shortcut="Ctrl+Alt+K" disabled={!gui.length} onClick={run(() => savePrefabFromSelection())} />
       <MenuItem label="Make responsive" disabled={!gui.length} onClick={run(() => makeResponsive(gui))} />
       <MenuItem label="Convert to Scale" disabled={!gui.length} onClick={run(() => convertUnits(gui, 'scale'))} />
       <MenuItem label="Convert to Offset" disabled={!gui.length} onClick={run(() => convertUnits(gui, 'offset'))} />

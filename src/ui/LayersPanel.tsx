@@ -8,6 +8,7 @@ import { addModifier, insertFragmentAt, insertionParent, insertNode, insertRoot,
 import { ClassIcon } from './icons';
 import { PRESETS } from '../model/presets';
 import { zoomToSelection } from './viewport';
+import { PrefabsSection } from './PrefabsPanel';
 
 export function LeftPanel() {
   const tab = useStore((s) => s.leftTab);
@@ -244,6 +245,7 @@ function InsertPanel() {
   const targets = selection.filter((id) => doc.nodes[id] && (isGuiObject(doc.nodes[id].className) || isRoot(doc.nodes[id].className)));
   return (
     <div className="insert">
+      <PrefabsSection />
       <div className="insert-title">Elements</div>
       <div className="insert-grid">
         {GUI_OBJECT_CLASSES.map((c) => (

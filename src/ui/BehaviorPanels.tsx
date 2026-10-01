@@ -7,7 +7,7 @@ import { isGuiObject } from '../model/schema';
 import { clipTrigger, defaultFrom } from '../model/runtime';
 import { pathTo } from '../model/doc';
 import type { AnimClip, AvatarKind, EffectKind, GuiNode, PreviewUser, TextBinding, ToastEnter, TriggerKind } from '../model/types';
-import { addEffect, addReverseClip, makeAllResponsive, patchNodes, removeEffect, renameClip, responsiveIssues, setCornerRadius, updateClip, updateEffect } from '../actions';
+import { addEffect, addReverseClip, makeAllResponsive, moveInside, overlapIssues, patchNodes, removeEffect, renameClip, responsiveIssues, setCornerRadius, updateClip, updateEffect } from '../actions';
 import { NumberField, Row, Segmented, SelectField, TextField, Toggle, Vec2Field } from './fields';
 import { TRIGGER_LABELS } from './labels';
 import { lookupUser } from './thumbs';
@@ -293,6 +293,34 @@ function PixelScaling() {
   );
 }
 
+/** Elements sitting on a card/frame without being inside it drift apart on other screen shapes */
+function OverlapCheck() {
+  const doc = useStore((s) => s.doc);
+  const issues = overlapIssues(doc);
+  if (!issues.length) return null;
+  return (
+    <div className="resp-warn">
+      <div>
+        <b>
+          {issues.length} element{issues.length > 1 ? 's sit' : ' sits'} on top of a frame without being inside it
+        </b>
+        . They're positioned against different parents, so on screens with another shape (Studio's viewport, phones) they slide apart.
+      </div>
+      <ul className="overlap-list">
+        {issues.slice(0, 6).map((i) => (
+          <li key={i.id}>
+            <span>
+              <b>{doc.nodes[i.id].name}</b> on <b>{doc.nodes[i.into].name}</b>
+            </span>
+            <button className="btn tiny" onClick={() => moveInside([i])}>Move inside</button>
+          </li>
+        ))}
+      </ul>
+      {issues.length > 1 && <button className="primary" onClick={() => moveInside(issues)}>Move all inside their frames</button>}
+    </div>
+  );
+}
+
 export function ResponsiveCheck() {
   const doc = useStore((s) => s.doc);
   const issues = responsiveIssues(doc);
@@ -300,6 +328,7 @@ export function ResponsiveCheck() {
     return (
       <>
         <div className="resp-ok">✓ All sizes scale with the screen</div>
+        <OverlapCheck />
         <PixelScaling />
       </>
     );
@@ -316,6 +345,7 @@ export function ResponsiveCheck() {
         Converts them to Scale, makes text scale (never above its current size) and locks each component's aspect ratio. Looks the same here at{' '}
         {doc.device.w}×{doc.device.h}.
       </div>
+      <OverlapCheck />
       <PixelScaling />
     </div>
   );

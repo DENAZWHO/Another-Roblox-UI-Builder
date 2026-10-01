@@ -6,7 +6,7 @@ import { CONTAINER_CLASSES, isGuiObject, isModifier, isRoot, isText, isWorldGui 
 import { useEffectiveNodes, useFontEpoch } from './hooks';
 import { applyPixelScale, pixelScaleFactor } from '../model/pixelScale';
 import type { GuiNode, Rect } from '../model/types';
-import { insertNode, patchNodes, placeNodes, setCornerRadius, setProp, setProps } from '../actions';
+import { insertNode, moveIntoFrame, patchNodes, reorderInStack, stackOrder, placeNodes, setCornerRadius, setProp, setProps } from '../actions';
 import { ScreenView, TopbarMock, type RenderCtx } from './render';
 import { viewport, zoomAt, zoomToFit } from './viewport';
 
@@ -16,11 +16,12 @@ interface Line { x1: number; y1: number; x2: number; y2: number }
 type Gesture =
   | { kind: 'pan'; sx: number; sy: number; px: number; py: number }
   | { kind: 'marquee'; x0: number; y0: number; additive: boolean; base: string[] }
-  | { kind: 'move'; sx: number; sy: number; ids: string[]; rects: Record<string, Rect>; union: Rect; lay: LayoutResult; moved: boolean; targets: Rect[] }
+  | { kind: 'move'; sx: number; sy: number; ids: string[]; rects: Record<string, Rect>; union: Rect; lay: LayoutResult; moved: boolean; targets: Rect[]; dropInto?: string | null }
   | { kind: 'resize'; handle: Handle; sx: number; sy: number; ids: string[]; rects: Record<string, Rect>; union: Rect; lay: LayoutResult; rot: number; targets: Rect[] }
   | { kind: 'rotate'; id: string; cx: number; cy: number; a0: number; r0: number }
   | { kind: 'create'; cls: GuiNode['className']; parentId: string; sx: number; sy: number; id: string | null }
   | { kind: 'radius'; id: string; corner: 'nw' | 'ne' | 'se' | 'sw'; rect: Rect; rot: number }
+  | { kind: 'stack'; sx: number; sy: number; ids: string[]; parentId: string; rects: Record<string, Rect>; moved: boolean; insertAt: number | null; dropInto: string | null; ghosts: Record<string, Rect> }
   | { kind: 'artboard'; id: string; sx: number; sy: number; x0: number; y0: number; moved: boolean };
 
 const SNAP_PX = 6;
@@ -46,6 +47,35 @@ export function Canvas() {
   const ref = useRef<HTMLDivElement>(null);
   const gesture = useRef<Gesture | null>(null);
   const [guides, setGuides] = useState<Line[]>([]);
+  // Figma-style: the frame a moved element will be dropped into (if it's a different parent)
+  const [dropTarget, setDropTarget] = useState<string | null>(null);
+  // dragging stacked elements: where they follow the mouse, and where they'd slot into the stack
+  const [stackGhosts, setStackGhosts] = useState<Rect[]>([]);
+  const [insertLine, setInsertLine] = useState<Line | null>(null);
+
+  /** Deepest frame (or the ScreenGui) under the pointer that isn't one of the moving elements */
+  const frameUnderPointer = (clientX: number, clientY: number, moving: string[]): string | null => {
+    for (const el of document.elementsFromPoint(clientX, clientY)) {
+      const id = (el as HTMLElement).closest?.('[data-nid]')?.getAttribute('data-nid');
+      if (!id || !nodes[id]) continue;
+      const path = pathTo(nodes, id);
+      if (moving.some((m) => path.includes(m))) continue;
+      // walk up to the nearest frame (or root) that can hold children
+      const screen = layout.rects[path[0]];
+      for (let i = path.length - 1; i >= 0; i--) {
+        const n = nodes[path[i]];
+        if (n.locked) continue;
+        if (isRoot(n.className)) return n.id;
+        if (!CONTAINER_CLASSES.includes(n.className)) continue;
+        // full-screen backdrops (e.g. a Background frame) aren't drop targets unless the element is already in them
+        const r = layout.rects[n.id];
+        const backdrop = screen && r && r.w * r.h >= 0.6 * screen.w * screen.h;
+        if (backdrop && !moving.some((m) => pathTo(nodes, m).includes(n.id))) continue;
+        return n.id;
+      }
+    }
+    return null;
+  };
   const [marquee, setMarquee] = useState<Rect | null>(null);
   const [space, setSpace] = useState(false);
   const [panning, setPanning] = useState(false);
@@ -247,6 +277,16 @@ export function Canvas() {
       sel = [target];
       s.select(sel);
     }
+    // elements in a UIListLayout/UIGridLayout can't be placed freely: drag to reorder them, or out of the frame
+    if (layout.laidOut.has(target)) {
+      const parentId = nodes[target].parentId!;
+      const ids = topLevelOnly(nodes, sel).filter((id) => nodes[id]?.parentId === parentId && layout.laidOut.has(id));
+      const rects: Record<string, Rect> = {};
+      ids.forEach((id) => (rects[id] = layout.rects[id]));
+      gesture.current = { kind: 'stack', sx: w.x, sy: w.y, ids, parentId, rects, moved: false, insertAt: null, dropInto: null, ghosts: rects };
+      startWindowGesture();
+      return;
+    }
     const ids = topLevelOnly(nodes, sel).filter((id) => isGuiObject(nodes[id]?.className) && !layout.laidOut.has(id));
     if (!ids.length) return;
     const rects: Record<string, Rect> = {};
@@ -348,6 +388,73 @@ export function Canvas() {
       dy += sn.dy;
       setGuides(sn.lines);
       placeNodes(g.ids.map((id) => ({ id, rect: { ...g.rects[id], x: g.rects[id].x + dx, y: g.rects[id].y + dy } })), g.lay);
+      // dropping on another frame moves the elements inside it (like Figma)
+      const over = frameUnderPointer(e.clientX, e.clientY, g.ids);
+      const parent = nodes[g.ids[0]]?.parentId;
+      g.dropInto = over && over !== parent && g.ids.every((id) => nodes[id]?.parentId === parent) ? over : null;
+      if (g.dropInto !== dropTarget) setDropTarget(g.dropInto);
+      return;
+    }
+
+    if (g.kind === 'stack') {
+      const dx = w.x - g.sx;
+      const dy = w.y - g.sy;
+      if (!g.moved) {
+        if (Math.hypot(dx, dy) * s.zoom < 3) return;
+        g.moved = true;
+      }
+      g.ghosts = Object.fromEntries(Object.entries(g.rects).map(([id, r]) => [id, { ...r, x: r.x + dx, y: r.y + dy }]));
+      setStackGhosts(Object.values(g.ghosts));
+      let over = frameUnderPointer(e.clientX, e.clientY, g.ids);
+      // hovering a sibling in the same stack means "reorder here", not "go inside that sibling"
+      if (over && nodes[over]?.parentId === g.parentId) over = g.parentId;
+      if (over && over !== g.parentId) {
+        // leaving the stack: drop into another frame / the screen
+        g.dropInto = over;
+        g.insertAt = null;
+        setInsertLine(null);
+        if (dropTarget !== over) setDropTarget(over);
+        return;
+      }
+      g.dropInto = null;
+      if (dropTarget) setDropTarget(null);
+      // slot inside the stack: count the siblings before the pointer
+      const stack = nodes[g.parentId].children.map((c) => nodes[c]).find((c) => c?.className === 'UIListLayout' || c?.className === 'UIGridLayout');
+      const siblings = stackOrder(g.parentId).filter((id) => !g.ids.includes(id) && layout.rects[id]);
+      const content = layout.content[g.parentId];
+      if (!stack || !content) return;
+      const vertical = stack.className === 'UIListLayout' ? stack.props.FillDirection !== 'Horizontal' : stack.props.FillDirection === 'Vertical';
+      const pos = (r: Rect) => (vertical ? r.y + r.h / 2 : r.x + r.w / 2);
+      let index: number;
+      if (stack.className === 'UIGridLayout') {
+        // nearest cell, before or after it along the fill direction
+        let best = -1;
+        let bestD = Infinity;
+        siblings.forEach((id, i) => {
+          const r = layout.rects[id];
+          const d = Math.hypot(r.x + r.w / 2 - w.x, r.y + r.h / 2 - w.y);
+          if (d < bestD) [best, bestD] = [i, d];
+        });
+        index = best < 0 ? 0 : best + ((vertical ? w.y : w.x) > pos(layout.rects[siblings[best]]) ? 1 : 0);
+      } else {
+        index = siblings.filter((id) => pos(layout.rects[id]) < (vertical ? w.y : w.x)).length;
+      }
+      g.insertAt = index;
+      // insertion line between the neighbours
+      const prev = siblings[index - 1] ? layout.rects[siblings[index - 1]] : null;
+      const next = siblings[index] ? layout.rects[siblings[index]] : null;
+      if (stack.className === 'UIGridLayout') {
+        const ref = next ?? prev;
+        if (!ref) return setInsertLine(null);
+        const x = next ? ref.x - 3 : ref.x + ref.w + 3;
+        setInsertLine({ x1: x, x2: x, y1: ref.y, y2: ref.y + ref.h });
+      } else if (vertical) {
+        const y = prev && next ? (prev.y + prev.h + next.y) / 2 : prev ? prev.y + prev.h + 3 : next ? next.y - 3 : content.y;
+        setInsertLine({ x1: content.x, x2: content.x + content.w, y1: y, y2: y });
+      } else {
+        const x = prev && next ? (prev.x + prev.w + next.x) / 2 : prev ? prev.x + prev.w + 3 : next ? next.x - 3 : content.x;
+        setInsertLine({ x1: x, x2: x, y1: content.y, y2: content.y + content.h });
+      }
       return;
     }
 
@@ -490,6 +597,20 @@ export function Canvas() {
   const onGestureEnd = (e: PointerEvent) => {
     const g = gesture.current;
     gesture.current = null;
+    setDropTarget(null);
+    setStackGhosts([]);
+    setInsertLine(null);
+    if (g?.kind === 'stack' && g.moved) {
+      const st = useStore.getState();
+      st.beginGesture();
+      if (g.dropInto && st.doc.nodes[g.dropInto]) moveIntoFrame(g.ids, g.dropInto, g.ghosts);
+      else if (g.insertAt !== null) reorderInStack(g.ids, g.insertAt);
+      st.endGesture();
+    }
+    if (g?.kind === 'move' && g.moved && g.dropInto) {
+      const target = useStore.getState().doc.nodes[g.dropInto];
+      if (target) moveIntoFrame(g.ids, target.id);
+    }
     setGuides([]);
     setMarquee(null);
     setPanning(false);
@@ -654,6 +775,22 @@ export function Canvas() {
           ))}
         </svg>
         {marquee && <div className="marquee" style={toRectStyle(toScreen(marquee))} />}
+        {stackGhosts.map((r, i) => <div key={'g' + i} className="stack-ghost" style={toRectStyle(toScreen(r))} />)}
+        {insertLine && (
+          <div
+            className="insert-line"
+            style={
+              insertLine.y1 === insertLine.y2
+                ? { left: pan.x + insertLine.x1 * zoom, top: pan.y + insertLine.y1 * zoom - 1.5, width: (insertLine.x2 - insertLine.x1) * zoom, height: 3 }
+                : { left: pan.x + insertLine.x1 * zoom - 1.5, top: pan.y + insertLine.y1 * zoom, width: 3, height: (insertLine.y2 - insertLine.y1) * zoom }
+            }
+          />
+        )}
+        {dropTarget && layout.rects[dropTarget] && (
+          <div className="drop-target" style={isRoot(nodes[dropTarget]?.className) && !isWorldGui(nodes[dropTarget].className) ? { left: pan.x, top: pan.y, width: doc.device.w * zoom, height: doc.device.h * zoom } : toRectStyle(toScreen(layout.rects[dropTarget]))}>
+            <span>Move into {nodes[dropTarget]?.name}</span>
+          </div>
+        )}
         {radiusBadge && <div className="rec-badge radius">{radiusBadge}</div>}
         {recording && <div className="rec-badge">● Recording keyframes at {playhead.toFixed(2)}s — edits create tweens</div>}
       </div>

@@ -11,7 +11,8 @@ import {
 } from './model/schema';
 import type { AnimClip, ClassName, Doc, Effect, EffectKind, GuiNode, ModifierClass, Rect, RootClass, TriggerKind, Tween, UDim } from './model/types';
 import { EFFECTS } from './model/effects';
-import { applyPixelScale, pixelScaleFactor } from './model/pixelScale';
+import { applyPixelScale, designSize, pixelScaleFactor } from './model/pixelScale';
+import { addPrefab, updatePrefab, type Prefab } from './model/prefabs';
 import { buildFragment, rootStarter } from './model/presets';
 
 const S = () => useStore.getState();
@@ -329,6 +330,13 @@ export function nudge(dx: number, dy: number) {
   const ids = s.selection.filter((id) => isGuiObject(s.doc.nodes[id]?.className) && !s.doc.nodes[id].locked);
   if (!ids.length) return;
   const lay = layoutNow();
+  const stacked = ids.filter((id) => lay.laidOut.has(id));
+  if (stacked.length) {
+    const layout = stackLayout(s.doc.nodes[stacked[0]].parentId);
+    const vertical = layout?.className === 'UIListLayout' ? layout.props.FillDirection !== 'Horizontal' : layout?.props.FillDirection === 'Vertical';
+    const step = vertical ? Math.sign(dy) : Math.sign(dx);
+    if (step) stepInStack(stacked, step);
+  }
   placeNodes(ids.filter((id) => !lay.laidOut.has(id)).map((id) => ({ id, rect: { ...lay.rects[id], x: lay.rects[id].x + dx, y: lay.rects[id].y + dy } })), lay);
 }
 
@@ -527,9 +535,10 @@ function moveNodesInner(ids: string[], parentId: string, index: number) {
       const n = d.nodes[id];
       if (!isGuiObject(n.className) || !before.rects[id]) continue;
       const content = after.content[n.parentId!];
-      if (!content || after.laidOut.has(id)) continue;
+      if (!content) continue;
       const p = rectToProps(n.props, before.rects[id], content, s.units);
-      n.props.Position = p.Position;
+      // a UIListLayout/UIGridLayout decides the position, but the size is still the element's own
+      if (!after.laidOut.has(id)) n.props.Position = p.Position;
       n.props.Size = p.Size;
     }
   });
@@ -748,4 +757,273 @@ export function makeAllResponsive() {
   }
   if (!tops.size) return;
   makeResponsive([...tops]);
+}
+
+// ---------------------------------------------------------------------------
+// Overlap check: an element sitting on top of a card/frame without being inside it
+
+export interface OverlapIssue {
+  id: string;
+  /** container it visually sits inside */
+  into: string;
+}
+
+const contains = (outer: Rect, inner: Rect) =>
+  inner.x >= outer.x - 1 && inner.y >= outer.y - 1 && inner.x + inner.w <= outer.x + outer.w + 1 && inner.y + inner.h <= outer.y + outer.h + 1;
+
+/**
+ * Elements that sit inside a Frame/CanvasGroup/ScrollingFrame on screen but aren't its children.
+ * They're positioned against different parents, so on other screen shapes they drift apart
+ * (e.g. a button placed on a card with a locked aspect ratio).
+ */
+export function overlapIssues(doc = S().doc): OverlapIssue[] {
+  const lay = computeLayout(doc.nodes, doc.rootIds, doc.device);
+  const out: OverlapIssue[] = [];
+  for (const r of doc.rootIds) {
+    if (doc.nodes[r]?.className !== 'ScreenGui') continue;
+    const all = descendants(doc.nodes, r).filter((id) => isGuiObject(doc.nodes[id].className) && doc.nodes[id].props.Visible !== false);
+    const containers = all.filter((id) => CONTAINER_CLASSES.includes(doc.nodes[id].className) && !doc.nodes[id].locked);
+    for (const id of all) {
+      const n = doc.nodes[id];
+      const rect = lay.rects[id];
+      if (!rect || lay.laidOut.has(id) || n.toast) continue;
+      const parentArea = lay.content[n.parentId!] ?? lay.rects[n.parentId!];
+      const ancestors = pathTo(doc.nodes, id);
+      let best: string | null = null;
+      for (const c of containers) {
+        if (c === id || ancestors.includes(c) || pathTo(doc.nodes, c).includes(id)) continue;
+        const cr = lay.rects[c];
+        if (!cr || !contains(cr, rect)) continue;
+        // full-screen backdrops (most of the parent's area) aren't cards
+        if (parentArea && cr.w * cr.h >= 0.6 * parentArea.w * parentArea.h) continue;
+        if (!best || cr.w * cr.h < lay.rects[best].w * lay.rects[best].h) best = c;
+      }
+      if (best) out.push({ id, into: best });
+    }
+  }
+  // moving a parent fixes its children too
+  const ids = new Set(out.map((o) => o.id));
+  return out.filter((o) => !pathTo(doc.nodes, o.id).slice(0, -1).some((a) => ids.has(a)));
+}
+
+/**
+ * Move elements into a frame, keeping them where they are on screen. If the frame stacks its children
+ * (UIListLayout), they're slotted into the stack where they visually sit, and if the stack then
+ * overflows, the biggest other item is shrunk to make room.
+ */
+export function moveIntoFrame(ids: string[], into: string, dropRects?: Record<string, Rect>) {
+  batch(() => {
+    const doc0 = S().doc;
+    const target = doc0.nodes[into];
+    if (!target) return;
+    const list = target.children.map((c) => doc0.nodes[c]).find((c) => c?.className === 'UIListLayout');
+    const lay0 = layoutNow();
+    // where the elements are (or were dropped) on screen
+    if (dropRects) for (const [id, r] of Object.entries(dropRects)) lay0.rects[id] = r;
+    if (list) {
+      const vertical = list.props.FillDirection !== 'Horizontal';
+      const centre = (id: string) => {
+        const r = lay0.rects[id];
+        return r ? (vertical ? r.y + r.h / 2 : r.x + r.w / 2) : 0;
+      };
+      const kids = target.children.filter((c) => isGuiObject(doc0.nodes[c]?.className) && !ids.includes(c));
+      const order = [...kids].sort((a, b) => (doc0.nodes[a].props.LayoutOrder ?? 0) - (doc0.nodes[b].props.LayoutOrder ?? 0));
+      for (const id of [...ids].sort((a, b) => centre(a) - centre(b))) {
+        let at = order.findIndex((k) => centre(id) < centre(k));
+        if (at < 0) at = order.length;
+        order.splice(at, 0, id);
+      }
+      S().update((d) => order.forEach((id, i) => void (d.nodes[id].props.LayoutOrder = i + 1)));
+    }
+    moveNodes(ids, into, target.children.length);
+    if (dropRects) {
+      // put them where they were dropped (unless the new parent stacks its children)
+      const lay = layoutNow();
+      placeNodes(ids.filter((id) => dropRects[id] && !lay.laidOut.has(id)).map((id) => ({ id, rect: dropRects[id] })), lay);
+    }
+    if (list) {
+      makeRoomInList(into, ids);
+      matchCrossAlignment(into, ids, lay0);
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Stacks (UIListLayout / UIGridLayout): their children are moved by reordering
+
+export function stackLayout(parentId: string | null | undefined): GuiNode | undefined {
+  const { doc } = S();
+  if (!parentId || !doc.nodes[parentId]) return undefined;
+  return doc.nodes[parentId].children.map((c) => doc.nodes[c]).find((c) => c?.className === 'UIListLayout' || c?.className === 'UIGridLayout');
+}
+
+/** Children of a stacking frame in the order they're shown */
+export function stackOrder(parentId: string): string[] {
+  const { doc } = S();
+  const kids = doc.nodes[parentId].children.filter((c) => isGuiObject(doc.nodes[c]?.className) && doc.nodes[c].props.Visible !== false);
+  const index = new Map(kids.map((k, i) => [k, i]));
+  const byName = stackLayout(parentId)?.props.SortOrder === 'Name';
+  return [...kids].sort((a, b) =>
+    byName
+      ? doc.nodes[a].name.localeCompare(doc.nodes[b].name) || index.get(a)! - index.get(b)!
+      : (doc.nodes[a].props.LayoutOrder ?? 0) - (doc.nodes[b].props.LayoutOrder ?? 0) || index.get(a)! - index.get(b)!,
+  );
+}
+
+/** Put elements at `index` among their stack siblings (index counts the other siblings) */
+export function reorderInStack(ids: string[], index: number) {
+  const { doc } = S();
+  const parentId = doc.nodes[ids[0]]?.parentId;
+  const layout = stackLayout(parentId);
+  if (!parentId || !layout) return;
+  const order = stackOrder(parentId).filter((id) => !ids.includes(id));
+  const moving = stackOrder(parentId).filter((id) => ids.includes(id));
+  order.splice(Math.max(0, Math.min(index, order.length)), 0, ...moving);
+  S().update((d) => {
+    order.forEach((id, i) => void (d.nodes[id].props.LayoutOrder = i + 1));
+    // a Name-sorted stack ignores LayoutOrder
+    if (d.nodes[layout.id].props.SortOrder !== 'LayoutOrder') d.nodes[layout.id].props.SortOrder = 'LayoutOrder';
+  });
+}
+
+/** Move stacked elements one place earlier (-1) or later (+1) */
+export function stepInStack(ids: string[], delta: number) {
+  const { doc } = S();
+  const parentId = doc.nodes[ids[0]]?.parentId;
+  if (!parentId || !stackLayout(parentId)) return;
+  const all = stackOrder(parentId);
+  const first = Math.min(...ids.map((id) => all.indexOf(id)).filter((i) => i >= 0));
+  reorderInStack(ids, first + delta);
+}
+
+/**
+ * A UIListLayout aligns every item the same way across the stack. If the other items span the full
+ * width (vertical list) they don't care, so set the alignment to where the moved element was sitting.
+ */
+function matchCrossAlignment(into: string, moved: string[], before: LayoutResult) {
+  const lay = layoutNow();
+  const doc = S().doc;
+  const list = doc.nodes[into].children.map((c) => doc.nodes[c]).find((c) => c?.className === 'UIListLayout');
+  const content = lay.content[into];
+  if (!list || !content) return;
+  const vertical = list.props.FillDirection !== 'Horizontal';
+  const others = doc.nodes[into].children.filter((c) => isGuiObject(doc.nodes[c]?.className) && !moved.includes(c) && lay.rects[c]);
+  const crossLen = vertical ? content.w : content.h;
+  if (!others.every((c) => Math.abs((vertical ? lay.rects[c].w : lay.rects[c].h) - crossLen) < 1.5)) return;
+  const r = before.rects[moved[0]];
+  if (!r) return;
+  const startGap = vertical ? r.x - content.x : r.y - content.y;
+  const endGap = vertical ? content.x + content.w - r.x - r.w : content.y + content.h - r.y - r.h;
+  const align = Math.abs(startGap - endGap) < 4 ? 'Center' : startGap < endGap ? (vertical ? 'Left' : 'Top') : vertical ? 'Right' : 'Bottom';
+  const prop = vertical ? 'HorizontalAlignment' : 'VerticalAlignment';
+  if (list.props[prop] !== align) S().update((d) => void (d.nodes[list.id].props[prop] = align));
+}
+
+function makeRoomInList(into: string, moved: string[]) {
+  const lay = layoutNow();
+  const doc = S().doc;
+  const list = doc.nodes[into].children.map((c) => doc.nodes[c]).find((c) => c?.className === 'UIListLayout');
+  const content = lay.content[into];
+  if (!list || !content) return;
+  const vertical = list.props.FillDirection !== 'Horizontal';
+  const len = vertical ? content.h : content.w;
+  const kids = doc.nodes[into].children.filter((c) => isGuiObject(doc.nodes[c]?.className) && doc.nodes[c].props.Visible !== false && lay.rects[c]);
+  const main = (id: string) => (vertical ? lay.rects[id].h : lay.rects[id].w);
+  const pad = list.props.Padding.s * len + list.props.Padding.o;
+  const overflow = kids.reduce((t, k) => t + main(k), 0) + pad * Math.max(0, kids.length - 1) - len;
+  if (overflow <= 0.5) return;
+  const victim = kids.filter((k) => !moved.includes(k)).sort((a, b) => main(b) - main(a)).find((k) => main(k) - overflow >= 12);
+  if (!victim) return;
+  const axis = vertical ? 'y' : 'x';
+  S().update((d) => {
+    const u = d.nodes[victim].props.Size[axis];
+    d.nodes[victim].props.Size[axis] = u.s !== 0 ? { s: +(u.s - overflow / len).toFixed(4), o: u.o } : { s: 0, o: Math.round(u.o - overflow) };
+  });
+  S().showToast(`Made room in ${doc.nodes[into].name}: ${doc.nodes[victim].name} is now ${Math.round(overflow)}px ${vertical ? 'shorter' : 'narrower'}`);
+}
+
+/** Put elements inside the frames they sit on (keeps them where they are on screen) */
+export function moveInside(issues: OverlapIssue[]) {
+  if (!issues.length) return;
+  batch(() => {
+    for (const { id, into } of issues) if (S().doc.nodes[id] && S().doc.nodes[into]) moveIntoFrame([id], into);
+  });
+  const { doc } = S();
+  if (!S().toast || Date.now() - S().toast!.id > 500) S().showToast(`Moved inside: ${issues.map((i) => `${doc.nodes[i.id]?.name} → ${doc.nodes[i.into]?.name}`).join(', ')}`);
+  S().select(issues.map((i) => i.id).filter((id) => S().doc.nodes[id]));
+}
+
+// ---------------------------------------------------------------------------
+// Custom prefabs
+
+/** Copy of the selected elements as a prefab: top-level elements get pixel sizes/positions relative to their combined box */
+export function prefabFromSelection(): { fragment: Fragment; size: { w: number; h: number }; name: string } | null {
+  const { doc, selection } = S();
+  const ids = topLevelOnly(doc.nodes, selection).filter((id) => isGuiObject(doc.nodes[id]?.className));
+  if (!ids.length) return null;
+  // measure at the design resolution so prefabs keep their designed size
+  const design = designSize(doc);
+  const lay = computeLayout(doc.nodes, doc.rootIds, { name: 'design', w: design.w, h: design.h });
+  const rects = ids.map((id) => lay.rects[id]).filter(Boolean);
+  if (!rects.length) return null;
+  const box = unionRect(rects);
+  const fragment = extractFragment(doc.nodes, ids);
+  const inside = new Set(fragment.nodes.map((n) => n.id));
+  for (const id of ids) {
+    const n = fragment.nodes.find((x) => x.id === id)!;
+    const r = lay.rects[id];
+    const a = n.props.AnchorPoint ?? { x: 0, y: 0 };
+    n.parentId = null;
+    n.props.Size = { x: { s: 0, o: Math.round(r.w) }, y: { s: 0, o: Math.round(r.h) } };
+    n.props.Position = { x: { s: 0, o: Math.round(r.x - box.x + a.x * r.w) }, y: { s: 0, o: Math.round(r.y - box.y + a.y * r.h) } };
+  }
+  // links to elements outside the prefab can't come along
+  for (const n of fragment.nodes) if (n.toast?.triggerNodeId && !inside.has(n.toast.triggerNodeId)) n.toast = { ...n.toast, triggerNodeId: undefined };
+  const name = ids.length === 1 ? doc.nodes[ids[0]].name : `${doc.nodes[ids[0]].name} +${ids.length - 1}`;
+  return { fragment, size: { w: Math.round(box.w), h: Math.round(box.h) }, name };
+}
+
+export function savePrefabFromSelection(name?: string) {
+  const p = prefabFromSelection();
+  if (!p) return S().showToast('Select one or more elements to save as a prefab');
+  const saved = addPrefab((name ?? p.name).trim() || p.name, p.fragment, p.size);
+  S().showToast(saved ? `Saved prefab "${saved.name}" — find it in Insert → My prefabs` : 'Could not save: browser storage is full (large preview images?)');
+  if (saved) useStore.setState({ leftTab: 'insert' });
+}
+
+export function updatePrefabFromSelection(id: string) {
+  const p = prefabFromSelection();
+  if (!p) return S().showToast('Select the elements to save into this prefab');
+  S().showToast(updatePrefab(id, { fragment: p.fragment, size: p.size }) ? 'Prefab updated' : 'Could not save: browser storage is full');
+}
+
+/** Insert a prefab (centred in the target, or centred on a canvas point) */
+export function insertPrefab(prefab: Prefab, opts: { parentId?: string; at?: { x: number; y: number } } = {}) {
+  return batch(() => {
+    const parentId = opts.parentId ?? insertionParent();
+    const roots = insertFragmentAt(structuredClone(prefab.fragment), parentId, !opts.at);
+    if (opts.at) {
+      const lay = layoutNow();
+      const rects = roots.map((r) => lay.rects[r]).filter(Boolean);
+      if (rects.length) {
+        const u = unionRect(rects);
+        const dx = opts.at.x - (u.x + u.w / 2);
+        const dy = opts.at.y - (u.y + u.h / 2);
+        placeNodes(roots.filter((r) => lay.rects[r] && !lay.laidOut.has(r)).map((r) => ({ id: r, rect: { ...lay.rects[r], x: lay.rects[r].x + dx, y: lay.rects[r].y + dy } })), lay);
+      }
+    } else if (roots.length > 1) {
+      // several elements: centre the group in the parent
+      const lay = layoutNow();
+      const c = lay.content[parentId];
+      const rects = roots.map((r) => lay.rects[r]).filter(Boolean);
+      if (c && rects.length) {
+        const u = unionRect(rects);
+        const dx = c.x + (c.w - u.w) / 2 - u.x;
+        const dy = c.y + (c.h - u.h) / 2 - u.y;
+        placeNodes(roots.filter((r) => !lay.laidOut.has(r)).map((r) => ({ id: r, rect: { ...lay.rects[r], x: lay.rects[r].x + dx, y: lay.rects[r].y + dy } })), lay);
+      }
+    }
+    S().select(roots);
+    return roots;
+  });
 }

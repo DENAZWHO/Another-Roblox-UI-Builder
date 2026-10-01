@@ -12,7 +12,7 @@ import {
 import { FONT_FAMILIES, FONT_WEIGHTS, fontFamily, nearestFace, slantedItalic, weightName } from '../model/fonts';
 import { EASING_DIRECTIONS, EASING_STYLES, ease } from '../model/animation';
 import type { ColorKey, GuiNode, ModifierClass, NumberKey, Tween } from '../model/types';
-import { addModifier, addTween, align, convertUnits, deleteTween, fixedSizeReason, makeResponsive, setProp, updateTween } from '../actions';
+import { addModifier, addTween, align, convertUnits, deleteTween, fixedSizeReason, makeResponsive, moveInside, overlapIssues, setProp, updateTween } from '../actions';
 import { AvatarRows, BindRow, ClipSettings, CornerRow, EffectsSection, PreviewUserRow, ResponsiveCheck, ToastSection, WorldSection } from './BehaviorPanels';
 import { removeNode } from '../model/doc';
 import { ColorField, NumberField, RichTextField, Row, Segmented, SelectField, TextField, Toggle, UDim2Field, UDimField, Vec2Field } from './fields';
@@ -353,6 +353,15 @@ function GuiObjectProps({ ids, node, nodes }: { ids: string[]; node: GuiNode; no
         {fixedSizeReason(node, nodes) && (
           <div className="note">Uses a {fixedSizeReason(node, nodes)} — it will look bigger on smaller screens (e.g. Studio).</div>
         )}
+        {(() => {
+          const issue = ids.length === 1 ? overlapIssues(doc).find((o) => o.id === node.id) : undefined;
+          return issue ? (
+            <div className="note overlap-note">
+              Sits on <b>{doc.nodes[issue.into].name}</b> but isn't inside it — on other screen shapes they'll drift apart.
+              <button className="btn tiny" onClick={() => moveInside([issue])}>Move inside {doc.nodes[issue.into].name}</button>
+            </div>
+          ) : null;
+        })()}
         <button
           className="btn small responsive-btn"
           title="Convert this element and everything inside it to Scale, make fixed-size text scale with it (capped at its current size) and lock its aspect ratio — so it looks the same on every screen size, including Studio's viewport"

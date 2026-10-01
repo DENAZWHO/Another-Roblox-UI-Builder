@@ -135,6 +135,8 @@ export function insertFragment(doc: Doc, frag: Fragment, parentId: string | null
     copy.id = map.get(n.id)!;
     copy.children = n.children.filter((c) => map.has(c)).map((c) => map.get(c)!);
     copy.parentId = n.parentId && map.has(n.parentId) ? map.get(n.parentId)! : null;
+    // references to elements inside the copy follow the copy; references to anything else are kept
+    if (copy.toast?.triggerNodeId && map.has(copy.toast.triggerNodeId)) copy.toast.triggerNodeId = map.get(copy.toast.triggerNodeId);
     doc.nodes[copy.id] = copy;
   }
   const roots = frag.rootIds.map((r) => map.get(r)!);
