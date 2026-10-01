@@ -1,0 +1,238 @@
+import { familyFromAssetUrl, fontAssetUrl } from '../model/fonts';
+import { createNode, type Fragment } from '../model/doc';
+import { CLASS_PROPS, ENUMS, type PropDef } from '../model/schema';
+import type { ClassName, Doc, GuiNode } from '../model/types';
+import { hexRgb, normalizeAsset } from './luau';
+import { rootScript } from './behavior';
+import { exportedProps } from '../model/richColors';
+
+const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+const f = (n: number) => (n === Infinity ? 'INF' : n === -Infinity ? '-INF' : String(+(+n).toFixed(6)));
+const c01 = (h: string) => hexRgb(h).map((v) => f(v / 255));
+
+function propXml(def: PropDef, v: any): string {
+  const n = def.name;
+  switch (def.type) {
+    case 'UDim2':
+      return `<UDim2 name="${n}"><XS>${f(v.x.s)}</XS><XO>${Math.round(v.x.o)}</XO><YS>${f(v.y.s)}</YS><YO>${Math.round(v.y.o)}</YO></UDim2>`;
+    case 'UDim':
+      return `<UDim name="${n}"><S>${f(v.s)}</S><O>${Math.round(v.o)}</O></UDim>`;
+    case 'Vector2':
+      return `<Vector2 name="${n}"><X>${f(v.x)}</X><Y>${f(v.y)}</Y></Vector2>`;
+    case 'Vector3':
+      return `<Vector3 name="${n}"><X>${f(v.x)}</X><Y>${f(v.y)}</Y><Z>${f(v.z)}</Z></Vector3>`;
+    case 'float':
+      return `<float name="${n}">${f(v)}</float>`;
+    case 'int':
+      return `<int name="${n}">${Math.round(v)}</int>`;
+    case 'bool':
+      return `<bool name="${n}">${v ? 'true' : 'false'}</bool>`;
+    case 'Color3': {
+      const [r, g, b] = c01(v);
+      return `<Color3 name="${n}"><R>${r}</R><G>${g}</G><B>${b}</B></Color3>`;
+    }
+    case 'string':
+      return `<string name="${n}">${esc(String(v ?? ''))}</string>`;
+    case 'Content': {
+      const url = normalizeAsset(v);
+      return url ? `<Content name="${n}"><url>${esc(url)}</url></Content>` : `<Content name="${n}"><null></null></Content>`;
+    }
+    case 'enum':
+      return `<token name="${n}">${ENUMS[def.enumType!][v] ?? 0}</token>`;
+    case 'Font':
+      return `<Font name="${n}"><Family><url>${fontAssetUrl(v.family)}</url></Family><Weight>${v.weight}</Weight><Style>${v.style}</Style></Font>`;
+    case 'ColorSequence':
+      return `<ColorSequence name="${n}">${v.map((k: any) => `${f(k.t)} ${c01(k.c).join(' ')} 0 `).join('')}</ColorSequence>`;
+    case 'NumberSequence':
+      return `<NumberSequence name="${n}">${v.map((k: any) => `${f(k.t)} ${f(k.v)} 0 `).join('')}</NumberSequence>`;
+    case 'Rect':
+      return `<Rect2D name="${n}"><min><X>${f(v.x0)}</X><Y>${f(v.y0)}</Y></min><max><X>${f(v.x1)}</X><Y>${f(v.y1)}</Y></max></Rect2D>`;
+  }
+}
+
+export interface RbxmxOptions {
+  /** Embed a LocalScript running animations, triggers and effects (inside each root GUI) */
+  behaviorScript: boolean;
+}
+
+export function generateRbxmx(doc: Doc, opts: RbxmxOptions): string {
+  let ref = 0;
+  const out: string[] = [
+    '<roblox xmlns:xmime="http://www.w3.org/2005/05/xmlmime" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://www.roblox.com/roblox.xsd" version="4">',
+    '\t<Meta name="ExplicitAutoJoints">true</Meta>',
+  ];
+  const item = (n: GuiNode, depth: number, extra?: string) => {
+    const t = '\t'.repeat(depth);
+    out.push(`${t}<Item class="${n.className}" referent="RBX${(ref++).toString(16).toUpperCase().padStart(8, '0')}">`);
+    out.push(`${t}\t<Properties>`);
+    out.push(`${t}\t\t<string name="Name">${esc(n.name)}</string>`);
+    const props = exportedProps(n);
+    for (const def of CLASS_PROPS[n.className]) {
+      const v = props[def.name];
+      if (v === undefined) continue;
+      out.push(`${t}\t\t${propXml(def, v)}`);
+    }
+    out.push(`${t}\t</Properties>`);
+    for (const c of n.children) item(doc.nodes[c], depth + 1);
+    if (extra) out.push(extra);
+    out.push(`${t}</Item>`);
+  };
+  for (const r of doc.rootIds) {
+    let extra: string | undefined;
+    if (opts.behaviorScript) {
+      const src = rootScript(doc, r);
+      if (src) {
+        extra = [
+          `\t\t<Item class="LocalScript" referent="RBX${(ref++).toString(16).toUpperCase().padStart(8, '0')}">`,
+          '\t\t\t<Properties>',
+          '\t\t\t\t<string name="Name">UIBehavior</string>',
+          `\t\t\t\t<ProtectedString name="Source"><![CDATA[${src.replace(/]]>/g, ']]]]><![CDATA[>')}]]></ProtectedString>`,
+          '\t\t\t</Properties>',
+          '\t\t</Item>',
+        ].join('\n');
+      }
+    }
+    item(doc.nodes[r], 1, extra);
+  }
+  out.push('</roblox>');
+  return out.join('\n') + '\n';
+}
+
+// ---------------------------------------------------------------------------
+// Import
+
+const LEGACY_FONTS: Record<number, [string, number, 'Normal' | 'Italic']> = {
+  0: ['LegacyArial', 400, 'Normal'], 1: ['Arimo', 400, 'Normal'], 2: ['Arimo', 700, 'Normal'],
+  3: ['SourceSansPro', 400, 'Normal'], 4: ['SourceSansPro', 700, 'Normal'], 5: ['SourceSansPro', 300, 'Normal'],
+  6: ['SourceSansPro', 400, 'Italic'], 16: ['SourceSansPro', 600, 'Normal'], 17: ['Montserrat', 400, 'Normal'],
+  18: ['Montserrat', 500, 'Normal'], 19: ['Montserrat', 700, 'Normal'], 20: ['Montserrat', 900, 'Normal'],
+  21: ['AmaticSC', 400, 'Normal'], 22: ['Bangers', 400, 'Normal'], 23: ['Creepster', 400, 'Normal'],
+  24: ['DenkOne', 400, 'Normal'], 25: ['Fondamento', 400, 'Normal'], 26: ['FredokaOne', 400, 'Normal'],
+  27: ['GrenzeGotisch', 400, 'Normal'], 28: ['IndieFlower', 400, 'Normal'], 29: ['JosefinSans', 400, 'Normal'],
+  30: ['Jura', 400, 'Normal'], 31: ['Kalam', 400, 'Normal'], 32: ['LuckiestGuy', 400, 'Normal'],
+  33: ['Merriweather', 400, 'Normal'], 34: ['Michroma', 400, 'Normal'], 35: ['Nunito', 400, 'Normal'],
+  36: ['Oswald', 400, 'Normal'], 37: ['PatrickHand', 400, 'Normal'], 38: ['PermanentMarker', 400, 'Normal'],
+  39: ['Roboto', 400, 'Normal'], 40: ['RobotoCondensed', 400, 'Normal'], 41: ['RobotoMono', 400, 'Normal'],
+  42: ['Sarpanch', 400, 'Normal'], 43: ['SpecialElite', 400, 'Normal'], 44: ['TitilliumWeb', 400, 'Normal'],
+  45: ['Ubuntu', 400, 'Normal'],
+};
+
+const numOf = (el: Element | null | undefined, tag: string) => {
+  const t = el?.getElementsByTagName(tag)[0]?.textContent?.trim() ?? '0';
+  if (/^-?inf/i.test(t)) return t.startsWith('-') ? -Infinity : Infinity;
+  return parseFloat(t) || 0;
+};
+
+const toHex = (r: number, g: number, b: number) =>
+  '#' + [r, g, b].map((v) => Math.round(Math.max(0, Math.min(1, v)) * 255).toString(16).padStart(2, '0')).join('');
+
+function readProp(def: PropDef, el: Element): any {
+  const text = el.textContent?.trim() ?? '';
+  switch (def.type) {
+    case 'UDim2':
+      return { x: { s: numOf(el, 'XS'), o: numOf(el, 'XO') }, y: { s: numOf(el, 'YS'), o: numOf(el, 'YO') } };
+    case 'UDim':
+      return { s: numOf(el, 'S'), o: numOf(el, 'O') };
+    case 'Vector2':
+      return { x: numOf(el, 'X'), y: numOf(el, 'Y') };
+    case 'Vector3':
+      return { x: numOf(el, 'X'), y: numOf(el, 'Y'), z: numOf(el, 'Z') };
+    case 'float':
+    case 'int':
+      return /^-?inf/i.test(text) ? Infinity : parseFloat(text) || 0;
+    case 'bool':
+      return text === 'true';
+    case 'Color3':
+      if (el.tagName === 'Color3uint8') {
+        const v = parseInt(text, 10) >>> 0;
+        return toHex(((v >> 16) & 255) / 255, ((v >> 8) & 255) / 255, (v & 255) / 255);
+      }
+      return toHex(numOf(el, 'R'), numOf(el, 'G'), numOf(el, 'B'));
+    case 'string':
+      return el.textContent ?? '';
+    case 'Content':
+      return el.getElementsByTagName('url')[0]?.textContent?.trim() ?? '';
+    case 'enum': {
+      const map = ENUMS[def.enumType!];
+      const v = parseInt(text, 10);
+      return Object.keys(map).find((k) => map[k] === v) ?? def.default;
+    }
+    case 'Font':
+      return {
+        family: familyFromAssetUrl(el.getElementsByTagName('url')[0]?.textContent ?? ''),
+        weight: numOf(el, 'Weight') || 400,
+        style: el.getElementsByTagName('Style')[0]?.textContent?.trim() === 'Italic' ? 'Italic' : 'Normal',
+      };
+    case 'ColorSequence': {
+      const p = text.split(/\s+/).map(Number);
+      const keys = [];
+      for (let i = 0; i + 4 < p.length + 1; i += 5) keys.push({ t: p[i], c: toHex(p[i + 1], p[i + 2], p[i + 3]) });
+      return keys.length >= 2 ? keys : def.default;
+    }
+    case 'NumberSequence': {
+      const p = text.split(/\s+/).map(Number);
+      const keys = [];
+      for (let i = 0; i + 2 < p.length + 1; i += 3) keys.push({ t: p[i], v: p[i + 1] });
+      return keys.length >= 2 ? keys : def.default;
+    }
+    case 'Rect': {
+      const mn = el.getElementsByTagName('min')[0];
+      const mx = el.getElementsByTagName('max')[0];
+      return { x0: numOf(mn, 'X'), y0: numOf(mn, 'Y'), x1: numOf(mx, 'X'), y1: numOf(mx, 'Y') };
+    }
+  }
+}
+
+/** Parse a .rbxmx file into a fragment. Unsupported classes (and their descendants) are skipped. */
+export function parseRbxmx(xml: string): { fragment: Fragment; skipped: string[] } {
+  const dom = new DOMParser().parseFromString(xml, 'application/xml');
+  if (dom.getElementsByTagName('parsererror').length) throw new Error('Not a valid .rbxmx (XML) file');
+  const root = dom.documentElement;
+  const nodes: GuiNode[] = [];
+  const skipped = new Set<string>();
+
+  const readItem = (el: Element, parentId: string | null): string | null => {
+    const cls = el.getAttribute('class') as ClassName;
+    if (!CLASS_PROPS[cls]) {
+      skipped.add(cls);
+      return null;
+    }
+    const node = createNode(cls);
+    node.parentId = parentId;
+    const propsEl = Array.from(el.children).find((c) => c.tagName === 'Properties');
+    let hasFontFace = false;
+    let legacyFont: number | null = null;
+    for (const p of Array.from(propsEl?.children ?? [])) {
+      const name = p.getAttribute('name') ?? '';
+      if (name === 'Name') node.name = p.textContent ?? cls;
+      if (name === 'Font' && p.tagName === 'token') legacyFont = parseInt(p.textContent ?? '0', 10);
+      const def = CLASS_PROPS[cls].find((d) => d.name === name);
+      if (!def) continue;
+      try {
+        node.props[name] = readProp(def, p);
+        if (name === 'FontFace') hasFontFace = true;
+      } catch {
+        /* keep default */
+      }
+    }
+    if (!hasFontFace && legacyFont !== null && LEGACY_FONTS[legacyFont] && 'FontFace' in node.props) {
+      const [family, weight, style] = LEGACY_FONTS[legacyFont];
+      node.props.FontFace = { family, weight, style };
+    }
+    nodes.push(node);
+    for (const c of Array.from(el.children)) {
+      if (c.tagName !== 'Item') continue;
+      const cid = readItem(c, node.id);
+      if (cid) node.children.push(cid);
+    }
+    return node.id;
+  };
+
+  const rootIds: string[] = [];
+  for (const c of Array.from(root.children)) {
+    if (c.tagName !== 'Item') continue;
+    const id = readItem(c, null);
+    if (id) rootIds.push(id);
+  }
+  return { fragment: { nodes, rootIds }, skipped: [...skipped] };
+}
