@@ -3,7 +3,7 @@
 // and on the document's own screen size.
 import { computeLayout, findChild, type LayoutResult } from './layout';
 import { applyPixelScale, pixelScaleFactor } from './pixelScale';
-import { DEVICES, isGuiObject, isRoot, isText, isWorldGui } from './schema';
+import { DEVICES, isRoot, isText, isWorldGui, throughFolders } from './schema';
 import { fitTextSize, stripRichText } from './fonts';
 import type { Device, Doc, GuiNode } from './types';
 
@@ -104,9 +104,7 @@ function paintOrder(nodes: Record<string, GuiNode>, rootId: string): string[] {
   const out: string[] = [];
   const global = root.props.ZIndexBehavior === 'Global';
   const visit = (id: string) => {
-    const kids = nodes[id].children
-      .map((c, i) => ({ n: nodes[c], i }))
-      .filter(({ n }) => n && isGuiObject(n.className));
+    const kids = throughFolders(nodes, nodes[id].children).map((c, i) => ({ n: nodes[c], i }));
     if (!global) kids.sort((a, b) => (a.n.props.ZIndex ?? 1) - (b.n.props.ZIndex ?? 1) || a.i - b.i);
     for (const { n } of kids) {
       out.push(n.id);

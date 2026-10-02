@@ -5,6 +5,7 @@ import { pathTo, rectsIntersect, topLevelOnly, unionRect } from '../model/doc';
 import { CONTAINER_CLASSES, isGuiObject, isModifier, isRoot, isText, isWorldGui } from '../model/schema';
 import { useEffectiveNodes, useFontEpoch } from './hooks';
 import { applyPixelScale, pixelScaleFactor } from '../model/pixelScale';
+import { fontStyle } from '../model/fonts';
 import type { GuiNode, Rect } from '../model/types';
 import { insertNode, moveIntoFrame, patchNodes, reorderInStack, stackOrder, placeNodes, setCornerRadius, setProp, setProps } from '../actions';
 import { DeviceCutouts, ScreenView, TopbarMock, type RenderCtx } from './render';
@@ -868,9 +869,14 @@ function isTyping() {
   return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable);
 }
 
+/** Readable size range for the inline editor (screen pixels), whatever the zoom or text size */
+const EDIT_MIN_PX = 13;
+const EDIT_MAX_PX = 22;
+
 function InlineTextEditor({ id, node, rect, zoom }: { id: string; node: GuiNode; rect: Rect; zoom: number }) {
   const [text, setText] = useState<string>(node.props.Text ?? '');
   const ref = useRef<HTMLTextAreaElement>(null);
+  const doc = useStore((s) => s.doc);
   useEffect(() => {
     ref.current?.focus();
     ref.current?.select();
@@ -880,12 +886,28 @@ function InlineTextEditor({ id, node, rect, zoom }: { id: string; node: GuiNode;
     useStore.setState({ editingTextId: null });
   };
   const p = node.props;
-  const size = p.TextScaled ? Math.min(rect.h / zoom, 48) : p.TextSize;
+  // roughly the size it's drawn at, kept readable: never giant (TextScaled, zoomed in) or tiny (zoomed out)
+  const drawn = (p.TextScaled ? Math.min(rect.h / zoom, 100) * 0.6 : p.TextSize * pixelScaleFactor(doc)) * zoom;
+  const size = Math.min(EDIT_MAX_PX, Math.max(EDIT_MIN_PX, drawn));
+  // as wide as the element, but within a comfortable reading width
+  const width = Math.min(Math.max(rect.w, 200), 560);
+  // fits the text (all of it visible, no scrolling), centred on the element
+  const [height, setHeight] = useState(0);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    const h = el.scrollHeight + 3;
+    el.style.height = `${h}px`;
+    setHeight(h);
+  }, [text, size, width]);
   return (
     <textarea
       ref={ref}
       className="inline-text"
       value={text}
+      rows={1}
+      spellCheck={false}
       onChange={(e) => setText(e.target.value)}
       onBlur={() => done(true)}
       onPointerDown={(e) => e.stopPropagation()}
@@ -898,8 +920,9 @@ function InlineTextEditor({ id, node, rect, zoom }: { id: string; node: GuiNode;
         }
       }}
       style={{
-        left: rect.x, top: rect.y, width: Math.max(rect.w, 40), height: Math.max(rect.h, 20),
-        fontSize: size * zoom, color: p.TextColor3, textAlign: p.TextXAlignment === 'Left' ? 'left' : p.TextXAlignment === 'Right' ? 'right' : 'center',
+        ...fontStyle(p.FontFace, size),
+        left: rect.x + rect.w / 2 - width / 2, top: rect.y + rect.h / 2 - height / 2, width,
+        lineHeight: 1.3, textAlign: p.TextXAlignment === 'Left' ? 'left' : p.TextXAlignment === 'Right' ? 'right' : 'center',
       }}
     />
   );

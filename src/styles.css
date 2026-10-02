@@ -281,7 +281,7 @@ a { color: var(--accent); }
 .guides line { stroke: var(--magenta); stroke-width: 1; }
 .marquee { border: 1px solid var(--accent); background: rgba(13, 153, 255, 0.08); }
 .rec-badge { left: 50%; top: 10px; transform: translateX(-50%); background: rgba(107, 62, 214, 0.9); color: #fff; padding: 4px 10px; border-radius: 12px; font-weight: 500; }
-.inline-text { position: absolute; background: rgba(0, 0, 0, 0.55); border: 1px solid var(--accent); outline: none; resize: none; padding: 2px; font-family: Inter, sans-serif; z-index: 10; }
+.inline-text { position: absolute; background: #1b1b1f; color: #f2f2f2; border: 1.5px solid var(--accent); border-radius: 4px; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5); outline: none; resize: none; padding: 4px 8px; overflow: hidden; white-space: pre-wrap; overflow-wrap: anywhere; z-index: 10; pointer-events: auto; }
 
 
 /* Roblox renderer */
@@ -751,3 +751,6 @@ kbd { min-width: 18px; text-align: center; display: inline-block; }
 .check-row:hover .check-actions, .check-row.on .check-actions { opacity: 1; }
 .check-box { border: 1.5px dashed #e0a030; border-radius: 2px; transform-origin: center; }
 .check-box.error { border-color: #ef5350; }
+
+/* stroke / shadow copies of rich text: one colour throughout, no <mark> backgrounds */
+.rb-text-under * { color: inherit !important; background: none !important; }

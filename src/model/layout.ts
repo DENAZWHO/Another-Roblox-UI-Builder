@@ -1,5 +1,5 @@
 import { isGuiObject, isText, isWorldGui, TOPBAR_INSET } from './schema';
-import { measureText, stripRichText } from './fonts';
+import { fitTextSize, measureText, stripRichText } from './fonts';
 import type { ClassName, Device, GuiNode, Rect, UDim, UDim2, Vec2 } from './types';
 
 export interface LayoutResult {
@@ -225,6 +225,12 @@ export function computeLayout(nodes: Record<string, GuiNode>, rootIds: string[],
     }
 
     for (const k of kids) layoutChildren(k);
+    // Folders: their contents are positioned against this element's content box, outside its layout
+    for (const f of parent.children) {
+      if (nodes[f]?.className !== 'Folder') continue;
+      res.rects[f] = C;
+      layoutChildren(f);
+    }
 
     // AutomaticCanvasSize: grow the canvas to fit content, then lay out once more
     if (parent.className === 'ScrollingFrame' && !canvasOverride && parent.props.AutomaticCanvasSize && parent.props.AutomaticCanvasSize !== 'None') {
@@ -264,7 +270,14 @@ export function computeLayout(nodes: Record<string, GuiNode>, rootIds: string[],
     let needW = 0;
     let needH = 0;
     const p = n.props;
-    if (isText(n.className) && !p.TextScaled && p.Text) {
+    if (isText(n.className) && p.TextScaled && p.Text && auto === 'X') {
+      // a fixed-height scaled label that widens to fit: the text fills the height, the width follows it
+      const text = p.RichText ? stripRichText(p.Text) : p.Text;
+      const tsc = findChild(nodes, id, 'UITextSizeConstraint');
+      const innerH = Math.max(1, h - pt - pb);
+      const size = fitTextSize(text, p.FontFace, 1e6, innerH, p.LineHeight ?? 1, false, tsc?.props.MinTextSize ?? 1, Math.min(100, tsc?.props.MaxTextSize ?? 100));
+      needW = measureText(text, p.FontFace, size, p.LineHeight ?? 1, null).w + pl + pr + 1;
+    } else if (isText(n.className) && !p.TextScaled && p.Text) {
       const text = p.RichText ? stripRichText(p.Text) : p.Text;
       // grows sideways: one line per paragraph; only taller: wrap at the current width
       const wrapAt = auto === 'Y' && p.TextWrapped ? Math.max(1, w - pl - pr) : null;

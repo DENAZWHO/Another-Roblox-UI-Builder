@@ -1,7 +1,7 @@
 import {
   AppWindow, Blend, Box, Frame, Image, ImagePlus, LayoutGrid, Monitor, PaintBucket, Ratio, Rows3,
   Scaling, ScrollText, Spline, SquareDashed, SquareRoundCorner, TextCursorInput, Type, CaseSensitive,
-  MousePointerClick, Signpost, Presentation, Clapperboard, Maximize2, Move, Layers2, StretchHorizontal, GalleryHorizontal, Table, type LucideIcon,
+  MousePointerClick, Signpost, Presentation, Clapperboard, Maximize2, Move, Layers2, StretchHorizontal, GalleryHorizontal, Table, Folder as FolderIcon, type LucideIcon,
 } from 'lucide-react';
 import type { ClassName } from '../model/types';
 
@@ -35,6 +35,7 @@ export const CLASS_ICONS: Record<ClassName, LucideIcon> = {
   UIPageLayout: GalleryHorizontal,
   UITableLayout: Table,
   Path2D: Spline,
+  Folder: FolderIcon,
 };
 
 export const CLASS_COLORS: Partial<Record<ClassName, string>> = {
@@ -57,6 +58,7 @@ export const CLASS_COLORS: Partial<Record<ClassName, string>> = {
   UIPageLayout: '#34d399',
   UITableLayout: '#34d399',
   Path2D: '#f59e0b',
+  Folder: '#9ca3af',
 };
 
 export function ClassIcon({ cls, size = 14 }: { cls: ClassName; size?: number }) {

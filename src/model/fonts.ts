@@ -55,7 +55,8 @@ const GOOGLE_FAMILIES: FontFamily[] = [
 ];
 
 /** Old family ids that Roblox now renders with another family */
-const ALIASES: Record<string, string> = { GothamSSm: 'Montserrat', Gotham: 'Montserrat', Arial: 'Arimo' };
+// Gotham isn't installed with Roblox (it's downloaded at runtime), so it's drawn with Builder Sans, Roblox's own UI font
+const ALIASES: Record<string, string> = { GothamSSm: 'BuilderSans', Gotham: 'BuilderSans', Arial: 'Arimo' };
 
 /** Font list shown in the editor (live binding: replaced by Studio's own list once loaded) */
 export let FONT_FAMILIES: FontFamily[] = GOOGLE_FAMILIES;

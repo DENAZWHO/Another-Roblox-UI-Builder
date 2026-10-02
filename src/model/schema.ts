@@ -356,6 +356,8 @@ export const CLASS_PROPS: Record<ClassName, PropDef[]> = {
     P('SortOrder', 'enum', 'LayoutOrder', { enumType: 'SortOrder', always: true }),
   ],
   // A line / curve in its parent's space (points are on the node, set with SetControlPoints)
+  // a Folder has no properties of its own (only Name)
+  Folder: [],
   Path2D: [
     P('Color3', 'Color3', '#000000', { always: true }),
     P('Thickness', 'float', 1, { always: true, min: 0, step: 0.5 }),
@@ -405,6 +407,22 @@ export const isGuiObject = (c: ClassName) => (GUI_OBJECT_CLASSES as string[]).in
 export const isModifier = (c: ClassName) => (MODIFIER_CLASSES as string[]).includes(c);
 export const isText = (c: ClassName) => TEXT_CLASSES.includes(c);
 export const isImage = (c: ClassName) => IMAGE_CLASSES.includes(c);
+export const isFolder = (c?: ClassName) => c === 'Folder';
+
+/**
+ * GuiObjects among `ids`, with Folders opened up: a Folder's contents act as children of the Folder's parent
+ * (positioned against it, drawn with it), though its list / grid layout doesn't arrange them.
+ */
+export function throughFolders(nodes: Record<string, { className: ClassName; children: string[] }>, ids: string[]): string[] {
+  const out: string[] = [];
+  for (const id of ids) {
+    const n = nodes[id];
+    if (!n) continue;
+    if (n.className === 'Folder') out.push(...throughFolders(nodes, n.children));
+    else if (isGuiObject(n.className)) out.push(id);
+  }
+  return out;
+}
 
 export function propDef(className: ClassName, name: string): PropDef | undefined {
   return CLASS_PROPS[className]?.find((p) => p.name === name);

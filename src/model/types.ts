@@ -45,7 +45,10 @@ export type RootClass = 'ScreenGui' | 'BillboardGui' | 'SurfaceGui';
 /** Drawn things that aren't GuiObjects (no Size / Position of their own) */
 export type ShapeClass = 'Path2D';
 
-export type ClassName = RootClass | GuiObjectClass | ModifierClass | ShapeClass;
+/** Groups instances without affecting them (children are positioned against the Folder's parent) */
+export type GroupClass = 'Folder';
+
+export type ClassName = RootClass | GuiObjectClass | ModifierClass | ShapeClass | GroupClass;
 
 /** A Path2D control point: position and tangent handles, relative to the parent's size (Path2DControlPoint) */
 export interface PathPoint {

@@ -17,7 +17,7 @@ const FILE = join(DIR, 'opencloud.json');
 const API = 'https://apis.roblox.com/assets/v1';
 const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/bmp', 'image/tga']);
 
-function load(): Config | null {
+export function load(): Config | null {
   try {
     const c = JSON.parse(readFileSync(FILE, 'utf8'));
     return c.apiKey && c.creatorId ? c : null;

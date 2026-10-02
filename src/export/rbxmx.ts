@@ -107,8 +107,8 @@ export function generateRbxmx(fullDoc: Doc, opts: RbxmxOptions): string {
 const LEGACY_FONTS: Record<number, [string, number, 'Normal' | 'Italic']> = {
   0: ['LegacyArial', 400, 'Normal'], 1: ['Arimo', 400, 'Normal'], 2: ['Arimo', 700, 'Normal'],
   3: ['SourceSansPro', 400, 'Normal'], 4: ['SourceSansPro', 700, 'Normal'], 5: ['SourceSansPro', 300, 'Normal'],
-  6: ['SourceSansPro', 400, 'Italic'], 16: ['SourceSansPro', 600, 'Normal'], 17: ['Montserrat', 400, 'Normal'],
-  18: ['Montserrat', 500, 'Normal'], 19: ['Montserrat', 700, 'Normal'], 20: ['Montserrat', 900, 'Normal'],
+  6: ['SourceSansPro', 400, 'Italic'], 16: ['SourceSansPro', 600, 'Normal'], 17: ['GothamSSm', 400, 'Normal'],
+  18: ['GothamSSm', 500, 'Normal'], 19: ['GothamSSm', 700, 'Normal'], 20: ['GothamSSm', 900, 'Normal'],
   21: ['AmaticSC', 400, 'Normal'], 22: ['Bangers', 400, 'Normal'], 23: ['Creepster', 400, 'Normal'],
   24: ['DenkOne', 400, 'Normal'], 25: ['Fondamento', 400, 'Normal'], 26: ['FredokaOne', 400, 'Normal'],
   27: ['GrenzeGotisch', 400, 'Normal'], 28: ['IndieFlower', 400, 'Normal'], 29: ['JosefinSans', 400, 'Normal'],
@@ -308,7 +308,8 @@ function rawToFragment(top: RawInst[], place: boolean): { fragment: Fragment; sk
   const rootIds: string[] = [];
   // look through containers (services, folders, models, parts) for what to import
   const find = (raw: RawInst, path: string[]) => {
-    const wanted = place ? LAYER_COLLECTORS.has(raw.className) : !!CLASS_PROPS[raw.className as ClassName];
+    // (a Folder on its own isn't a GUI: look inside it)
+    const wanted = place ? LAYER_COLLECTORS.has(raw.className) : !!CLASS_PROPS[raw.className as ClassName] && raw.className !== 'Folder';
     if (wanted) {
       const id = readInst(raw, null);
       if (!id) return;

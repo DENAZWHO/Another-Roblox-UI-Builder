@@ -2,7 +2,7 @@ import { memo, useEffect, useState, type CSSProperties, type ReactNode } from 'r
 import { Backpack, Box, Ellipsis, Image as ImageIcon, MessageCircle, Users, Clapperboard } from 'lucide-react';
 import { findChild, resolve, type LayoutResult } from '../model/layout';
 import { baselineShift, fitTextSize, fontFamily, fontStyle, lineFactor, stripRichText } from '../model/fonts';
-import { isGuiObject, isImage, isText, isWorldGui } from '../model/schema';
+import { isGuiObject, isImage, isText, isWorldGui, throughFolders } from '../model/schema';
 import type { UIEvent } from '../model/runtime';
 import type { ColorKey, FontValue, GuiNode, NumberKey, PreviewUser, UDim2, Vec2, UDim, Device } from '../model/types';
 import { imageSize, assetThumb, avatarThumb, subscribeThumbs } from './thumbs';
@@ -21,6 +21,8 @@ export interface RenderCtx {
   pixelScale?: number;
   /** Player shown for avatar images / name bindings */
   previewUser?: PreviewUser;
+  /** ScreenGui.ZIndexBehavior = Global: every element is ordered by ZIndex across the whole tree */
+  globalZ?: boolean;
   /** Preview: nodes that react to pointer events, and the handler */
   eventIds?: Set<string>;
   onEvent?: (id: string, ev: UIEvent) => void;
@@ -202,6 +204,20 @@ function strokesOf(ctx: RenderCtx, n: GuiNode) {
   return n.children.map((c) => ctx.nodes[c]).filter((c) => c?.className === 'UIStroke' && c.props.Enabled !== false);
 }
 
+/** A UIGradient inside a UIStroke colours the stroke (Color × gradient) */
+function strokeGradient(ctx: RenderCtx, s: GuiNode): GuiNode | undefined {
+  const g = findChild(ctx.nodes, s.id, 'UIGradient');
+  return g && g.props.Enabled !== false ? g : undefined;
+}
+
+/** One colour for a stroke that can't show a gradient (text outlines): the gradient's middle */
+function strokeColor(ctx: RenderCtx, s: GuiNode, alpha: number): string {
+  const g = strokeGradient(ctx, s);
+  if (!g) return rgba(s.props.Color, alpha);
+  const [r, gg, b] = mul(s.props.Color, sampleColor(g.props.Color, 0.5));
+  return `rgba(${r}, ${gg}, ${b}, ${alpha})`;
+}
+
 export const NodeView = memo(function NodeView({ id, origin, ctx }: NodeProps) {
   useThumbs();
   const n = ctx.nodes[id];
@@ -228,7 +244,9 @@ export const NodeView = memo(function NodeView({ id, origin, ctx }: NodeProps) {
     top: r.y - origin.y,
     width: w,
     height: h,
-    zIndex: p.ZIndex,
+    // Sibling: the element (and everything inside it) sits at its ZIndex among its siblings.
+    // Global: no stacking context here, so descendants compete by ZIndex with the whole ScreenGui (see below).
+    zIndex: ctx.globalZ ? undefined : p.ZIndex,
     transform: p.Rotation ? `rotate(${p.Rotation}deg)` : undefined,
   };
   const scaleMod = n.children.map((c) => ctx.nodes[c]).find((c) => c?.className === 'UIScale');
@@ -252,7 +270,7 @@ export const NodeView = memo(function NodeView({ id, origin, ctx }: NodeProps) {
     else bg.backgroundColor = rgba(p.BackgroundColor3, bgAlpha);
   }
   // strokes: the plain kind (outside, no offset, fixed thickness) as stacked box-shadows; the rest as their own rings
-  const ringed = borderStrokes.filter((s) => (s.props.BorderStrokePosition ?? 'Outer') !== 'Outer' || resolveU(s.props.BorderOffset) !== 0 || s.props.StrokeSizingMode === 'ScaledSize');
+  const ringed = borderStrokes.filter((s) => (s.props.BorderStrokePosition ?? 'Outer') !== 'Outer' || resolveU(s.props.BorderOffset) !== 0 || s.props.StrokeSizingMode === 'ScaledSize' || strokeGradient(ctx, s));
   const plain = borderStrokes.filter((s) => !ringed.includes(s));
   const boxShadows: string[] = [];
   let spread = 0;
@@ -273,6 +291,23 @@ export const NodeView = memo(function NodeView({ id, origin, ctx }: NodeProps) {
     const t = s.props.StrokeSizingMode === 'ScaledSize' ? s.props.Thickness * Math.min(w, h) : s.props.Thickness;
     const pos = s.props.BorderStrokePosition ?? 'Outer';
     const out = resolve(s.props.BorderOffset ?? { s: 0, o: 0 }, Math.min(w, h)) + (pos === 'Outer' ? t : pos === 'Center' ? t / 2 : 0);
+    const sg = strokeGradient(ctx, s);
+    if (sg) {
+      // a gradient ring: the gradient fills the box, a mask keeps only the band t wide
+      const band = 'linear-gradient(#000 0 0)';
+      return (
+        <div
+          key={s.id}
+          className="rb-stroke"
+          style={{
+            position: 'absolute', inset: -out, padding: t, boxSizing: 'border-box', pointerEvents: 'none',
+            backgroundImage: gradientCss(sg, s.props.Color, 1 - s.props.Transparency),
+            WebkitMask: `${band} content-box, ${band}`, WebkitMaskComposite: 'xor', maskComposite: 'exclude',
+            borderRadius: corners.map((c) => `${c > 0 ? Math.max(0, c + out) : 0}px`).join(' '), zIndex: (s.props.ZIndex ?? 1) < 0 ? -1 : undefined,
+          } as CSSProperties}
+        />
+      );
+    }
     return (
       <div
         key={s.id}
@@ -319,7 +354,7 @@ export const NodeView = memo(function NodeView({ id, origin, ctx }: NodeProps) {
     ? textShadows.map((s) => `${resolve(s.props.Offset.x, w)}px ${resolve(s.props.Offset.y, h)}px ${Math.max(0, resolve(s.props.BlurRadius, Math.min(w, h)))}px ${rgba(s.props.Color, 1 - (s.props.Transparency ?? 0))}`).join(', ')
     : undefined;
 
-  const children = n.children.filter((c) => ctx.nodes[c] && isGuiObject(ctx.nodes[c].className));
+  const children = throughFolders(ctx.nodes, n.children);
   const paths = n.children.filter((c) => ctx.nodes[c]?.className === 'Path2D');
   const scrolling = n.className === 'ScrollingFrame';
   const clip = p.ClipsDescendants || scrolling || n.className === 'CanvasGroup';
@@ -362,16 +397,31 @@ export const NodeView = memo(function NodeView({ id, origin, ctx }: NodeProps) {
 
   return (
     <div data-nid={id} className={autoBtn || ev ? 'rb-node rb-autobtn' : 'rb-node'} style={outer} {...handlers}>
-      {shadowsBehind}
-      <div className="rb-bg" style={bg} />
-      {rings}
-      {shadowsAbove}
-      {layer}
+      {ctx.globalZ ? (
+        // Global ZIndex: only the element's own look is lifted to its ZIndex; its children are ordered on their own
+        <div style={{ position: 'absolute', inset: 0, zIndex: p.ZIndex }}>
+          {shadowsBehind}
+          <div className="rb-bg" style={bg} />
+          {rings}
+          {shadowsAbove}
+          {layer}
+        </div>
+      ) : (
+        <>
+          {shadowsBehind}
+          <div className="rb-bg" style={bg} />
+          {rings}
+          {shadowsAbove}
+          {layer}
+        </>
+      )}
       {(children.length > 0 || paths.length > 0) && (
         <div
           className={scrolling && ctx.interactive ? 'rb-children rb-scroll' : 'rb-children'}
           style={{
             position: 'absolute', inset: 0, overflow: clip ? (scrolling && ctx.interactive ? 'auto' : 'hidden') : 'visible',
+            // Sibling ZIndex: children always draw above their parent, even with a lower (or negative) ZIndex
+            zIndex: ctx.globalZ ? undefined : 0,
             borderRadius: n.className === 'CanvasGroup' ? radius : undefined,
             ['--sbw' as any]: `${p.ScrollBarThickness ?? 0}px`,
             ['--sbc' as any]: scrolling ? rgba(p.ScrollBarImageColor3, 1 - (p.ScrollBarImageTransparency ?? 0)) : undefined,
@@ -449,13 +499,21 @@ function TextLayer({ n, ctx, box, el, grad, stroke, textShadow }: { n: GuiNode; 
   // of the element and clipped to the letters. Plain text: the layer is the text colour × gradient
   // (incl. its transparency). Rich text keeps per-span colours and the gradient multiplies over them.
   const richHtml = (p.RichText || multiColor) && !showPlaceholder;
-  fill.color = grad && !richHtml ? 'transparent' : rgba(color, alpha);
+  // 0.99: fully opaque text gets the browser's coloured (sub-pixel) smoothing on Windows, which fringes the
+  // letters blue / orange against outlines; slightly translucent text is smoothed in grey, like Roblox
+  fill.color = grad && !richHtml ? 'transparent' : rgba(color, Math.min(alpha, 0.99));
   // the text is laid out with padding (not absolute positioning): background-clip:text only reliably
   // includes in-flow, non-positioned descendants
+  // Text that overflows its box still gets coloured (Roblox clamps the gradient past the edges). Along the
+  // gradient the layer must keep the box's size (the colours are mapped onto it), but across a vertical or
+  // horizontal gradient it can grow, so overflowing letters aren't cut off.
+  const gRot = ((((grad?.props.Rotation ?? 0) % 180) + 180) % 180);
+  const ex = grad && Math.abs(gRot - 90) < 0.5 ? el.w : 0;
+  const ey = grad && (gRot < 0.5 || gRot > 179.5) ? el.h : 0;
   const gradLayer: CSSProperties | null = grad
     ? {
-        position: 'absolute', left: 0, top: 0, width: el.w, height: el.h, boxSizing: 'border-box', pointerEvents: 'none',
-        paddingLeft: box.x, paddingTop: box.y - shiftPx, paddingRight: el.w - box.x - box.w, paddingBottom: el.h - box.y - box.h + shiftPx,
+        position: 'absolute', left: -ex, top: -ey, width: el.w + 2 * ex, height: el.h + 2 * ey, boxSizing: 'border-box', pointerEvents: 'none',
+        paddingLeft: box.x + ex, paddingTop: box.y - shiftPx + ey, paddingRight: el.w - box.x - box.w + ex, paddingBottom: el.h - box.y - box.h + shiftPx + ey,
         display: 'flex', flexDirection: 'column', justifyContent: wrap.justifyContent, alignItems: wrap.alignItems,
         backgroundImage: richHtml ? gradientCss(grad, '#ffffff', 1) : gradientCss(grad, color, alpha),
         WebkitBackgroundClip: 'text', backgroundClip: 'text', color: 'transparent',
@@ -465,7 +523,7 @@ function TextLayer({ n, ctx, box, el, grad, stroke, textShadow }: { n: GuiNode; 
 
   let strokeStyle: CSSProperties | null = null;
   if (stroke && stroke.props.Thickness > 0) {
-    const sc = rgba(stroke.props.Color, (1 - stroke.props.Transparency) * alpha);
+    const sc = strokeColor(ctx, stroke, (1 - stroke.props.Transparency) * alpha);
     strokeStyle = { ...textStyle, position: 'absolute', inset: 0, color: sc, WebkitTextStroke: `${stroke.props.Thickness * 2}px ${sc}`, strokeLinejoin: 'round' } as CSSProperties;
     if (stroke.props.LineJoinMode === 'Miter') (strokeStyle as any).strokeLinejoin = 'miter';
   } else if ((p.TextStrokeTransparency ?? 1) < 1) {
@@ -486,15 +544,17 @@ function TextLayer({ n, ctx, box, el, grad, stroke, textShadow }: { n: GuiNode; 
   // TextTruncate: "…" where it doesn't fit (one line, or the lines that fit when wrapped)
   const truncate = p.TextTruncate && p.TextTruncate !== 'None' && !p.TextScaled;
   const lineH = size * lh * lineFactor(font);
-  const inner: CSSProperties = { position: 'relative', maxWidth: p.TextWrapped || truncate ? '100%' : undefined };
+  // text-align on the block, so every wrapped line is aligned (and the stroke / shadow copies line up with it)
+  const inner: CSSProperties = { position: 'relative', maxWidth: p.TextWrapped || truncate ? '100%' : undefined, textAlign: textStyle.textAlign };
   if (truncate && !p.TextWrapped) Object.assign(inner, { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'pre' });
   if (truncate && p.TextWrapped) Object.assign(inner, { display: '-webkit-box', WebkitBoxOrient: 'vertical', WebkitLineClamp: Math.max(1, Math.floor((box.h + 0.5) / lineH)), overflow: 'hidden' });
   return (
     <>
       <div style={wrap}>
         <div style={inner}>
-          {textShadow && (html ? <span style={{ ...textStyle, position: 'absolute', inset: 0, color: 'transparent', textShadow }} dangerouslySetInnerHTML={html} /> : <span style={{ ...textStyle, position: 'absolute', inset: 0, color: 'transparent', textShadow }}>{raw}</span>)}
-          {strokeStyle && (html ? <span style={strokeStyle} dangerouslySetInnerHTML={html} /> : <span style={strokeStyle}>{raw}</span>)}
+          {/* copies under the text: rich-text colours inside them must not override the stroke / shadow colour */}
+          {textShadow && (html ? <span className="rb-text-under" style={{ ...textStyle, position: 'absolute', inset: 0, color: 'transparent', textShadow }} dangerouslySetInnerHTML={html} /> : <span style={{ ...textStyle, position: 'absolute', inset: 0, color: 'transparent', textShadow }}>{raw}</span>)}
+          {strokeStyle && (html ? <span className="rb-text-under" style={strokeStyle} dangerouslySetInnerHTML={html} /> : <span style={strokeStyle}>{raw}</span>)}
           {html ? <span style={fill} dangerouslySetInnerHTML={html} /> : <span style={fill}>{raw}</span>}
         </div>
       </div>
@@ -567,16 +627,25 @@ function ImageLayer({ n, ctx, w, h, radius }: { n: GuiNode; ctx: RenderCtx; w: n
     }
     case 'Slice': {
       const sc = p.SliceCenter;
-      const iw = n.preview?.w;
-      const ih = n.preview?.h;
-      if (iw && ih && sc.x1 > sc.x0 && sc.y1 > sc.y0) {
+      // edges are in the real image's pixels
+      const real = n.preview ? { w: n.preview.w, h: n.preview.h } : imageSize(src);
+      const iw = real?.w;
+      const ih = real?.h;
+      if (iw && ih && sc.x1 >= sc.x0 && sc.y1 >= sc.y0 && (sc.x1 > 0 || sc.y1 > 0)) {
         const s = p.SliceScale ?? 1;
-        const edges = [sc.y0, iw - sc.x1, ih - sc.y1, sc.x0];
+        // a centre that's a single point (e.g. 15,15,15,15): Roblox stretches that pixel row / column
+        // across the middle; a zero-size slice would draw nothing and leave gaps
+        const x1 = Math.min(iw, Math.max(sc.x1, sc.x0 + 1));
+        const y1 = Math.min(ih, Math.max(sc.y1, sc.y0 + 1));
+        const edges = [sc.y0, iw - x1, ih - y1, sc.x0].map((e) => Math.max(0, e));
         delete st.backgroundImage;
         st.borderStyle = 'solid';
         st.borderImageSource = `url("${src}")`;
         st.borderImageSlice = `${edges.join(' ')} fill`;
-        st.borderWidth = edges.map((e) => `${e * s}px`).join(' ');
+        // border-image-width (not border-width): the element keeps its size, and slices too big for it
+        // are shrunk proportionally, like Roblox does
+        st.borderWidth = 0;
+        st.borderImageWidth = edges.map((e) => `${e * s}px`).join(' ');
         st.borderRadius = 0;
       } else st.backgroundSize = '100% 100%';
       break;
@@ -591,7 +660,18 @@ function ImageLayer({ n, ctx, w, h, radius }: { n: GuiNode; ctx: RenderCtx; w: n
     st.backgroundPosition = `${-ro.x * kx}px ${-ro.y * ky}px`;
   }
   for (const k of ['backgroundSize', 'backgroundRepeat', 'backgroundPosition'] as const) (mask as any)['mask' + k.slice(10)] = st[k];
-  const tint = (p.ImageColor3 ?? '#ffffff').toLowerCase() !== '#ffffff';
+  // ImageColor3 and a UIGradient both tint the image (multiplied over it, inside its shape)
+  const gradMod = findChild(ctx.nodes, n.id, 'UIGradient');
+  const imgGrad = gradMod && gradMod.props.Enabled !== false ? gradMod : undefined;
+  const tint = (p.ImageColor3 ?? '#ffffff').toLowerCase() !== '#ffffff' || !!imgGrad;
+  const tintStyle: CSSProperties = st.borderImageSource
+    ? {
+        ...st, borderImageSource: 'none', borderStyle: 'none',
+        WebkitMaskBoxImageSource: st.borderImageSource as string, WebkitMaskBoxImageSlice: st.borderImageSlice as string, WebkitMaskBoxImageWidth: st.borderImageWidth as string,
+      } as CSSProperties
+    : { ...st, maskImage: `url("${src}")`, WebkitMaskImage: `url("${src}")`, ...mask };
+  if (imgGrad) Object.assign(tintStyle, { backgroundImage: gradientCss(imgGrad, p.ImageColor3 ?? '#ffffff', 1), backgroundSize: '100% 100%', backgroundRepeat: 'no-repeat', backgroundPosition: '0 0' });
+  else Object.assign(tintStyle, { backgroundImage: 'none', backgroundColor: p.ImageColor3 });
   // ImageButton: HoverImage / PressedImage replace the image while hovered / held (Preview)
   const alt = (content: string | undefined, cls: string) => {
     const s2 = ctx.interactive && content ? assetThumb(content) : undefined;
@@ -604,9 +684,7 @@ function ImageLayer({ n, ctx, w, h, radius }: { n: GuiNode; ctx: RenderCtx; w: n
       <div className={`rb-img-base${hover ? ' has-hover' : ''}${pressed ? ' has-pressed' : ''}`} style={st} />
       {hover}
       {pressed}
-      {tint && st.backgroundImage && (
-        <div style={{ ...st, backgroundImage: 'none', backgroundColor: p.ImageColor3, mixBlendMode: 'multiply', maskImage: `url("${src}")`, WebkitMaskImage: `url("${src}")`, ...mask }} />
-      )}
+      {tint && (st.backgroundImage || st.borderImageSource) && <div style={{ ...tintStyle, mixBlendMode: 'multiply' }} />}
     </>
   );
 }
@@ -618,7 +696,8 @@ export function ScreenView({ id, ctx }: { id: string; ctx: RenderCtx }) {
   if (!n || !r) return null;
   const world = isWorldGui(n.className);
   if (n.props.Enabled === false && !world) return null;
-  const kids = n.children.filter((c) => ctx.nodes[c] && isGuiObject(ctx.nodes[c].className));
+  const kids = throughFolders(ctx.nodes, n.children);
+  if (n.props.ZIndexBehavior === 'Global') ctx = { ...ctx, globalZ: true };
   const clip = n.className === 'SurfaceGui' || (world && n.props.ClipsDescendants);
   const safe = ctx.layout.clips?.[id];
   if (safe) {
