@@ -85,6 +85,7 @@ export function setProps(changes: { id: string; props: Record<string, any> }[], 
   const s = S();
   const animating = s.mode === 'animate' && s.playhead > 0.001;
   let newTween: string | null = null;
+  const aspects = animating ? [] : aspectRatioUpdates(changes);
   s.update((d) => {
     for (const { id, props } of changes) {
       const n = d.nodes[id];
@@ -99,6 +100,7 @@ export function setProps(changes: { id: string; props: Record<string, any> }[], 
         }
       }
     }
+    for (const { id, ratio } of aspects) if (d.nodes[id]) d.nodes[id].props.AspectRatio = ratio;
   }, { coalesce });
   if (newTween) useStore.setState({ selectedTweenId: newTween });
 }
@@ -325,6 +327,32 @@ export function placeNodes(rects: { id: string; rect: Rect }[], lay: LayoutResul
     return { id, props };
   });
   setProps(changes.filter((c) => Object.keys(c.props).length));
+}
+
+/**
+ * Giving an element a new Size in the editor (resize handles, Size fields) means "this shape":
+ * its UIAspectRatioConstraint follows, so it still keeps that shape on every screen
+ * instead of snapping back to the old ratio.
+ */
+function aspectRatioUpdates(changes: { id: string; props: Record<string, any> }[]): { id: string; ratio: number }[] {
+  const nodes = S().doc.nodes;
+  const sized = changes.filter((c) => c.props.Size && nodes[c.id]?.children.some((k) => nodes[k]?.className === 'UIAspectRatioConstraint'));
+  if (!sized.length) return [];
+  const lay = layoutNow();
+  const out: { id: string; ratio: number }[] = [];
+  for (const { id, props } of sized) {
+    const n = nodes[id];
+    const box = lay.content[n.parentId!] ?? lay.rects[n.parentId!];
+    if (!box || (n.props.AutomaticSize && n.props.AutomaticSize !== 'None')) continue;
+    const w = props.Size.x.s * box.w + props.Size.x.o;
+    const h = props.Size.y.s * box.h + props.Size.y.o;
+    const ar = n.children.map((k) => nodes[k]).find((k) => k?.className === 'UIAspectRatioConstraint')!;
+    if (w > 0 && h > 0) {
+      const ratio = +(w / h).toFixed(4);
+      if (Math.abs(ratio - ar.props.AspectRatio) > 0.0005) out.push({ id: ar.id, ratio });
+    }
+  }
+  return out;
 }
 
 const sameUDim2 = (a: any, b: any) => a.x.s === b.x.s && a.x.o === b.x.o && a.y.s === b.y.s && a.y.o === b.y.o;
