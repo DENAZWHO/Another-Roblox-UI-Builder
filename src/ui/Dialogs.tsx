@@ -11,7 +11,8 @@ import { TRIGGER_LABELS } from './labels';
 import { DEVICES, isGuiObject, isWorldGui } from '../model/schema';
 import { download, projectJson, projectName } from '../files';
 import { pushToStudio, useSyncStatus } from '../sync';
-import { ScreenView, TopbarMock, type RenderCtx } from './render';
+import { DeviceCutouts, ScreenView, TopbarMock, type RenderCtx } from './render';
+import { firstSelectable, navigate } from './GamepadPanel';
 import { useFontEpoch } from './hooks';
 import { Segmented, Toggle } from './fields';
 import { MenuItem, useClickOutside } from './Toolbar';
@@ -19,6 +20,7 @@ import {
   convertUnits, copySelection, makeResponsive, savePrefabFromSelection, cutSelection, deleteSelection, duplicateSelection, groupSelection, pasteClipboard, reorder,
   toggleLocked, toggleVisible, ungroupSelection,
 } from '../actions';
+import { screensOf } from '../model/screens';
 
 function Modal({ title, children, onClose, wide, footer }: { title: ReactNode; children: ReactNode; onClose: () => void; wide?: boolean; footer?: ReactNode }) {
   useEffect(() => {
@@ -77,7 +79,7 @@ function ExportDialog() {
   const [behavior, setBehavior] = useState(true);
   const [copied, setCopied] = useState(false);
   const hasBehavior =
-    doc.scalePixels !== false || clickButtons(doc).length > 0 || doc.clips.some((c) => c.tweens.length) || Object.values(doc.nodes).some((n) => n.effects?.length || n.avatar || n.bind || n.adornee || n.toast);
+    doc.scalePixels !== false || clickButtons(doc).length > 0 || doc.clips.some((c) => c.tweens.length) || Object.values(doc.nodes).some((n) => n.effects?.length || n.avatar || n.bind || n.adornee || n.toast || n.events?.length || n.boundingUI || n.nav);
 
   const code = useMemo(() => {
     if (tab === 'luau') return generateLuau(doc, { style, behavior });
@@ -119,7 +121,7 @@ function ExportDialog() {
         />
         {tab === 'luau' && <Segmented value={style} options={[{ value: 'localscript', label: 'LocalScript' }, { value: 'module', label: 'ModuleScript' }]} onChange={setStyle} />}
         {tab !== 'json' && hasBehavior && (
-          <Toggle value={behavior} onChange={setBehavior} label={tab === 'rbxmx' ? 'Include behaviour LocalScript (animations, effects, avatars, pixel scaling)' : 'Include animations, effects & avatars'} />
+          <Toggle value={behavior} onChange={setBehavior} label={tab === 'rbxmx' ? 'Include behaviour LocalScript (animations, events, effects, avatars, pixel scaling)' : 'Include animations, events, effects & avatars'} />
         )}
         {tab !== 'json' && <ClickPrintsToggle />}
       </div>
@@ -215,6 +217,34 @@ function PreviewDialog() {
   const stageRef = useRef<HTMLDivElement>(null);
   const worldRoots = doc.rootIds.filter((id) => isWorldGui(doc.nodes[id].className));
   const viewRoot = view !== 'screen' && doc.nodes[view] ? view : null;
+  const screens = screensOf(doc);
+
+  // gamepad / keyboard navigation (arrows = D-pad, Enter = A)
+  const [gpSel, setGpSel] = useState<string | null>(null);
+  useEffect(() => {
+    const key = (e: KeyboardEvent) => {
+      const dir = ({ ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right' } as const)[e.key as 'ArrowUp'];
+      const lay = layoutRef.current;
+      const live = runtime.nodes();
+      if (dir) {
+        e.preventDefault();
+        setGpSel((cur) => (cur && lay.rects[cur] ? navigate(live, lay, cur, dir) : firstSelectable(live, lay)));
+      } else if (e.key === 'Enter' && gpSel) {
+        e.preventDefault();
+        runtime.event(gpSel, 'down');
+        runtime.event(gpSel, 'up');
+        runtime.event(gpSel, 'click');
+      }
+    };
+    window.addEventListener('keydown', key);
+    return () => window.removeEventListener('keydown', key);
+  }, [runtime, gpSel]);
+
+  useEffect(() => {
+    const up = () => runtime.release();
+    window.addEventListener('pointerup', up);
+    return () => window.removeEventListener('pointerup', up);
+  }, [runtime]);
 
   useEffect(() => {
     const r = () => setSize({ w: window.innerWidth, h: window.innerHeight });
@@ -264,8 +294,18 @@ function PreviewDialog() {
   return (
     <div className="preview">
       <div className="preview-bar">
-        <select value={view} onChange={(e) => setView(e.target.value)}>
+        <select
+          value={view}
+          onChange={(e) => {
+            const v = e.target.value;
+            if (v.startsWith('screen:')) {
+              runtime.showScreen(v.slice(7));
+              setView('screen');
+            } else setView(v);
+          }}
+        >
           <option value="screen">Screen</option>
+          {screens.length > 1 && screens.map((s) => <option key={s.id} value={'screen:' + s.id}>Show screen: {s.name}</option>)}
           {worldRoots.map((id) => <option key={id} value={id}>{doc.nodes[id].className}: {doc.nodes[id].name}</option>)}
         </select>
         {!viewRoot && (
@@ -289,7 +329,7 @@ function PreviewDialog() {
           </select>
         )}
         <span style={{ flex: 1 }} />
-        <span className="muted">Hover and click to test triggers & effects · Esc to close</span>
+        <span className="muted">Hover and click to test triggers & effects · arrows + Enter = gamepad · Esc to close</span>
         <button className="icon-btn" onClick={close}><X size={16} /></button>
       </div>
       <PreviewEscape />
@@ -306,7 +346,11 @@ function PreviewDialog() {
               <div style={{ position: 'absolute', left: -area.x, top: -area.y }}>
                 {(viewRoot ? [viewRoot] : doc.rootIds.filter((id) => !isWorldGui(doc.nodes[id].className))).map((id) => <ScreenView key={id} id={id} ctx={ctx} />)}
               </div>
-              {!viewRoot && doc.showTopbar && <TopbarMock />}
+              {!viewRoot && doc.showTopbar && <TopbarMock device={device} />}
+              {!viewRoot && <DeviceCutouts device={device} />}
+              {gpSel && layout.rects[gpSel] && (
+                <div className="gp-highlight" style={{ left: layout.rects[gpSel].x - area.x - 4, top: layout.rects[gpSel].y - area.y - 4, width: layout.rects[gpSel].w + 8, height: layout.rects[gpSel].h + 8 }} />
+              )}
             </div>
           </div>
         )}

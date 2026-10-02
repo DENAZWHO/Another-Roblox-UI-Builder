@@ -6,8 +6,9 @@ import { identifier, pathTo } from '../model/doc';
 import { CLASS_PROPS, isGuiObject, isWorldGui } from '../model/schema';
 import { clickButtons, clickMessage, clipTrigger, defaultFrom, MOUSE_RANGE, TOAST_GAP } from '../model/runtime';
 import { designSize, pixelScaleOn } from '../model/pixelScale';
+import { screenOfRoot } from '../model/screens';
 import type { AnimClip, Doc, Effect, GuiNode, Tween } from '../model/types';
-import { luaValue, num } from './luau';
+import { luaValue, num, pathPointsLua } from './luau';
 
 const BUTTONS = ['TextButton', 'ImageButton'];
 const isPressInput = 'input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch';
@@ -104,11 +105,16 @@ export function behaviorLines(doc: Doc, inScope: (id: string) => boolean, ref: (
     const byStart = new Map<number, string[]>();
     for (const list of groups.values()) {
       const t = list[0];
-      const props = list.map((x) => `${x.prop} = ${luaValue(propDefFor(doc, x), x.to)}`).join(', ');
-      const call = `TweenService:Create(${ref(t.nodeId)}, TweenInfo.new(${num(t.duration)}, Enum.EasingStyle.${t.style}, Enum.EasingDirection.${t.direction}), { ${props} }):Play()`;
       const s = +t.start.toFixed(3);
       if (!byStart.has(s)) byStart.set(s, []);
-      byStart.get(s)!.push(call);
+      if (t.duration <= 0) {
+        // a 0-second tween is a jump: assign it first, so tweens starting at the same moment start from it
+        const sets = list.map((x) => `${ref(t.nodeId)}.${x.prop} = ${luaValue(propDefFor(doc, x), x.to)}`);
+        byStart.get(s)!.unshift(...sets);
+        continue;
+      }
+      const props = list.map((x) => `${x.prop} = ${luaValue(propDefFor(doc, x), x.to)}`).join(', ');
+      byStart.get(s)!.push(`TweenService:Create(${ref(t.nodeId)}, TweenInfo.new(${num(t.duration)}, Enum.EasingStyle.${t.style}, Enum.EasingDirection.${t.direction}), { ${props} }):Play()`);
     }
     for (const [start, calls] of [...byStart.entries()].sort((a, b) => a[0] - b[0])) {
       if (start <= 0) calls.forEach((c) => body.push(B + c));
@@ -194,7 +200,7 @@ export function behaviorLines(doc: Doc, inScope: (id: string) => boolean, ref: (
     lines.push(...toasterLines(I));
     for (const n of toastNodes) {
       const cfg = n.toast!;
-      const fn = 'show' + identifier(n.name).replace(/^_/, '');
+      const fn = toastFnName(n);
       const rootId = pathTo(doc.nodes, n.id)[0];
       const event = JSON.stringify('Show' + identifier(n.name).replace(/^_/, ''));
       lines.push(
@@ -227,12 +233,127 @@ export function behaviorLines(doc: Doc, inScope: (id: string) => boolean, ref: (
     }
   }
 
+  // --- drag detectors ------------------------------------------------------
+  const bounded = nodes.filter((n) => n.className === 'UIDragDetector' && n.boundingUI && doc.nodes[n.boundingUI]);
+  if (bounded.length) {
+    lines.push(`${I}-- Drag detectors: the area each one has to stay inside`);
+    for (const n of bounded) lines.push(`${I}${ref(n.id)}.BoundingUI = ${ref(n.boundingUI!)}`);
+    lines.push('');
+  }
+
+  // --- gamepad navigation (element references) --------------------------------
+  const navLines: string[] = [];
+  const NAV: [string, string][] = [['up', 'NextSelectionUp'], ['down', 'NextSelectionDown'], ['left', 'NextSelectionLeft'], ['right', 'NextSelectionRight'], ['image', 'SelectionImageObject']];
+  for (const n of nodes) {
+    for (const [k, prop] of NAV) {
+      const t = (n.nav as Record<string, string> | undefined)?.[k];
+      if (t && doc.nodes[t]) navLines.push(`${I}${ref(n.id)}.${prop} = ${ref(t)}`);
+    }
+  }
+  if (navLines.length) lines.push(`${I}-- Gamepad navigation`, ...navLines, '');
+
+  // --- events --------------------------------------------------------------
+  const evLines = eventLines(doc, nodes, ref, I, clipFns, inScope, services);
+  if (evLines.length) lines.push(`${I}-- Events`, ...evLines);
+
   lines.push(...clickLines(doc, inScope, ref, I));
 
   if (onLoad.length) lines.push(`${I}-- Play on load`, ...onLoad, '');
   return { lines, services, clipFns };
 }
 
+
+const toastFnName = (n: GuiNode) => 'show' + identifier(n.name).replace(/^_/, '');
+
+/** Elements' events as Connect handlers (a Wait yields inside the handler, like task.wait in game) */
+function eventLines(
+  doc: Doc, nodes: GuiNode[], ref: (id: string) => string, I: string, clipFns: Map<string, string>, inScope: (id: string) => boolean, services: Set<string>,
+): string[] {
+  const out: string[] = [];
+  for (const n of nodes) {
+    for (const h of n.events ?? []) {
+      if (!h.actions.length) continue;
+      const el = ref(n.id);
+      const B = I + '\t';
+      const body: string[] = [];
+      for (const a of h.actions) {
+        const t = a.target ? doc.nodes[a.target] : n;
+        const needsTarget = ['show', 'hide', 'toggle', 'tween', 'set', 'nextPage', 'prevPage', 'jumpPage'].includes(a.kind);
+        if (needsTarget && !t) {
+          body.push(`${B}-- ${a.kind}: the target element no longer exists`);
+          continue;
+        }
+        const tv = t ? ref(t.id) : '';
+        const def = t && a.prop ? CLASS_PROPS[t.className].find((p) => p.name === a.prop) : undefined;
+        switch (a.kind) {
+          case 'show': body.push(`${B}${tv}.Visible = true`); break;
+          case 'hide': body.push(`${B}${tv}.Visible = false`); break;
+          case 'toggle': body.push(`${B}${tv}.Visible = not ${tv}.Visible`); break;
+          case 'play': {
+            const fn = a.clipId && clipFns.get(a.clipId);
+            const clip = doc.clips.find((c) => c.id === a.clipId);
+            body.push(fn ? `${B}${fn}()` : `${B}-- play: ${clip ? `"${clip.name}" has no tweens in this GUI` : 'no animation chosen'}`);
+            break;
+          }
+          case 'set':
+            body.push(def ? `${B}${tv}.${def.name} = ${luaValue(def, a.value)}` : `${B}-- set: no property chosen`);
+            break;
+          case 'tween':
+            if (!def) {
+              body.push(`${B}-- tween: no property chosen`);
+              break;
+            }
+            services.add('TweenService');
+            body.push(`${B}TweenService:Create(${tv}, TweenInfo.new(${num(a.duration ?? 0.3)}, Enum.EasingStyle.${a.style ?? 'Quad'}, Enum.EasingDirection.${a.direction ?? 'Out'}), { ${def.name} = ${luaValue(def, a.value)} }):Play()`);
+            break;
+          case 'toast': {
+            const tpl = a.toastId ? doc.nodes[a.toastId] : undefined;
+            const args = `${JSON.stringify(a.title ?? '')}, ${JSON.stringify(a.message ?? '')}`;
+            if (!tpl?.toast) body.push(`${B}-- toast: no toast template chosen`);
+            else if (inScope(tpl.id)) body.push(`${B}${toastFnName(tpl)}(${args})`);
+            else body.push(`${B}${ref(pathTo(doc.nodes, tpl.id)[0])}:WaitForChild(${JSON.stringify('Show' + identifier(tpl.name).replace(/^_/, ''))}):Fire(${args})`);
+            break;
+          }
+          case 'print': body.push(`${B}print(${JSON.stringify(a.text ?? '')})`); break;
+          case 'showScreen': {
+            const target = a.screenId && (doc.screens ?? []).find((s) => s.id === a.screenId);
+            if (!target) {
+              body.push(`${B}-- show screen: no screen chosen`);
+              break;
+            }
+            body.push(`${B}-- show the "${target.name}" screen`);
+            for (const r of doc.rootIds) {
+              if (doc.nodes[r]?.className !== 'ScreenGui') continue;
+              const mine = screenOfRoot(doc, r).id === target.id;
+              if (mine) body.push(`${B}${ref(r)}.Enabled = true`);
+              else if (!a.keepOthers) body.push(`${B}${ref(r)}.Enabled = false`);
+            }
+            break;
+          }
+          case 'nextPage':
+          case 'prevPage':
+          case 'jumpPage': {
+            const layout = t?.children.map((c) => doc.nodes[c]).find((c) => c?.className === 'UIPageLayout');
+            if (!layout) body.push(`${B}-- ${a.kind}: ${t?.name ?? 'the target'} has no UIPageLayout`);
+            else body.push(`${B}${ref(layout.id)}:${a.kind === 'nextPage' ? 'Next()' : a.kind === 'prevPage' ? 'Previous()' : `JumpToIndex(${Math.max(0, Math.round(a.page ?? 0))})`}`);
+            break;
+          }
+          case 'wait': body.push(`${B}task.wait(${num(Math.max(0, a.seconds ?? 0))})`); break;
+        }
+      }
+      const btn = BUTTONS.includes(n.className);
+      const press = `${B}if not (${isPressInput}) then return end`;
+      const label = `${I}-- ${n.name}: ${h.on === 'load' ? 'on load' : h.on}`;
+      if (h.on === 'load') out.push(label, `${I}task.spawn(function()`, ...body, `${I}end)`, '');
+      else if (h.on === 'click') out.push(label, ...(btn ? [`${I}${el}.Activated:Connect(function()`] : [`${I}${el}.InputBegan:Connect(function(input)`, press]), ...body, `${I}end)`, '');
+      else if (h.on === 'hoverEnter') out.push(label, `${I}${el}.MouseEnter:Connect(function()`, ...body, `${I}end)`, '');
+      else if (h.on === 'hoverLeave') out.push(label, `${I}${el}.MouseLeave:Connect(function()`, ...body, `${I}end)`, '');
+      else if (h.on === 'pressDown') out.push(label, ...(btn ? [`${I}${el}.MouseButton1Down:Connect(function()`] : [`${I}${el}.InputBegan:Connect(function(input)`, press]), ...body, `${I}end)`, '');
+      else if (h.on === 'pressUp') out.push(label, ...(btn ? [`${I}${el}.MouseButton1Up:Connect(function()`] : [`${I}${el}.InputEnded:Connect(function(input)`, press]), ...body, `${I}end)`, '');
+    }
+  }
+  return out;
+}
 
 /** Every button's MouseButton1Click connected to a placeholder print */
 export function clickLines(doc: Doc, inScope: (id: string) => boolean, ref: (id: string) => string, I: string): string[] {
@@ -344,7 +465,8 @@ export function rootScript(doc: Doc, rootId: string): string | null {
   const path = (id: string) => {
     const parts: string[] = [];
     for (let cur: string | null = id; cur && cur !== rootId; cur = doc.nodes[cur].parentId) parts.unshift(doc.nodes[cur].name);
-    return 'ui' + parts.map((p) => `:WaitForChild(${JSON.stringify(p)})`).join('');
+    // an element of another GUI (an event can show / hide it): it sits next to this GUI in PlayerGui
+    return (within(id) ? 'ui' : 'ui.Parent') + parts.map((p) => `:WaitForChild(${JSON.stringify(p)})`).join('');
   };
   const ref = (id: string) => {
     if (id === rootId) return 'ui';
@@ -352,6 +474,9 @@ export function rootScript(doc: Doc, rootId: string): string | null {
     return refs.get(id)!;
   };
   const b = behaviorLines(doc, within, ref, '');
+  // Path2D points live in a binary property files can't carry: set them when the script runs
+  const paths = Object.values(doc.nodes).filter((n) => n.className === 'Path2D' && n.points?.length && within(n.id));
+  if (paths.length) b.lines.unshift('-- Path2D control points', ...paths.map((n) => `${ref(n.id)}:SetControlPoints(${pathPointsLua(n.points!)})`), '');
   const adornee = isWorldGui(root.className) && root.adornee ? adorneeExpr(root.adornee) : null;
   const scaler = root.className === 'ScreenGui' && pixelScaleOn(doc) ? pixelScalerLines('ui', designSize(doc), '') : [];
   if (!b.lines.length && !adornee && !scaler.length) return null;
@@ -380,7 +505,9 @@ export function pixelScalerLines(rootRef: string, design: { w: number; h: number
     `${J}local PROPS = {`,
     `${K}UIStroke = { "Thickness" },`,
     `${K}UITextSizeConstraint = { "MaxTextSize", "MinTextSize" },`,
-    `${K}UICorner = { "CornerRadius" },`,
+    `${K}UICorner = { "CornerRadius", "TopLeftRadius", "TopRightRadius", "BottomRightRadius", "BottomLeftRadius" },`,
+    `${K}UIShadow = { "BlurRadius", "Offset", "Spread" }, Path2D = { "Thickness" },`,
+    `${K}UIPageLayout = { "Padding" }, UITableLayout = { "Padding" },`,
     `${K}UIPadding = { "PaddingTop", "PaddingBottom", "PaddingLeft", "PaddingRight" },`,
     `${K}UIListLayout = { "Padding" },`,
     `${K}UIGridLayout = { "CellSize", "CellPadding" },`,
@@ -420,7 +547,8 @@ export function pixelScalerLines(rootRef: string, design: { w: number; h: number
     `${K}if not props or base[inst] then return end`,
     `${K}local values = {}`,
     `${K}for _, prop in props do`,
-    `${K}\tvalues[prop] = inst:GetAttribute("UIB_" .. prop) or (inst :: any)[prop]`,
+    `${K}\tlocal ok, current = pcall(function() return (inst :: any)[prop] end) -- older clients may lack a property`,
+    `${K}\tvalues[prop] = inst:GetAttribute("UIB_" .. prop) or (if ok then current else nil)`,
     `${K}end`,
     `${K}base[inst] = values`,
     `${K}apply(inst)`,

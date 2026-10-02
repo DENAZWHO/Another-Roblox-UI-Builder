@@ -1,4 +1,5 @@
-import { isGuiObject, isWorldGui, TOPBAR_INSET } from './schema';
+import { isGuiObject, isText, isWorldGui, TOPBAR_INSET } from './schema';
+import { measureText, stripRichText } from './fonts';
 import type { ClassName, Device, GuiNode, Rect, UDim, UDim2, Vec2 } from './types';
 
 export interface LayoutResult {
@@ -12,6 +13,10 @@ export interface LayoutResult {
   laidOut: Set<string>;
   /** BillboardGui / SurfaceGui artboards (canvas coordinates) */
   artboards: Record<string, Rect>;
+  /** ScreenGuis clipped to the device's safe area (ClipToDeviceSafeArea): the clip rect */
+  clips: Record<string, Rect>;
+  /** Fullscreen elements stretched over the screen cut-outs (SafeAreaCompatibility): not clipped */
+  unclipped: Set<string>;
 }
 
 export const DEFAULT_PREVIEW_PPS = 50;
@@ -40,9 +45,35 @@ export function findChild(nodes: Record<string, GuiNode>, id: string, cls: Class
   return undefined;
 }
 
+/** Width kept free on each side of the top bar (its buttons) for TopbarSafeInsets */
+const TOPBAR_SIDE = 112;
+
+/** ScreenInsets in effect (IgnoreGuiInset turns CoreUISafeInsets into DeviceSafeInsets, like in Roblox) */
+export function screenInsets(node: GuiNode): string {
+  const mode: string = node.props.ScreenInsets ?? 'CoreUISafeInsets';
+  return node.props.IgnoreGuiInset && mode === 'CoreUISafeInsets' ? 'DeviceSafeInsets' : mode;
+}
+
+/** The device's safe area (inside the notch / home bar) */
+export function safeArea(device: Device): Rect {
+  const s = device.safe ?? { l: 0, t: 0, r: 0, b: 0 };
+  return { x: s.l, y: s.t, w: device.w - s.l - s.r, h: device.h - s.t - s.b };
+}
+
+/** The area a ScreenGui's contents are laid out in (ScreenInsets) */
 export function screenRect(node: GuiNode, device: Device): Rect {
-  if (node.props.IgnoreGuiInset) return { x: 0, y: 0, w: device.w, h: device.h };
-  return { x: 0, y: TOPBAR_INSET, w: device.w, h: device.h - TOPBAR_INSET };
+  const safe = safeArea(device);
+  switch (screenInsets(node)) {
+    case 'None':
+      return { x: 0, y: 0, w: device.w, h: device.h };
+    case 'DeviceSafeInsets':
+      return safe;
+    case 'TopbarSafeInsets':
+      return { x: safe.x + TOPBAR_SIDE, y: safe.y, w: Math.max(0, safe.w - 2 * TOPBAR_SIDE), h: TOPBAR_INSET };
+    default:
+      // CoreUISafeInsets: below the top bar, inside the safe area
+      return { x: safe.x, y: safe.y + TOPBAR_INSET, w: safe.w, h: Math.max(0, safe.h - TOPBAR_INSET) };
+  }
 }
 
 function constrain(nodes: Record<string, GuiNode>, id: string, w: number, h: number): [number, number] {
@@ -73,19 +104,34 @@ function sortChildren(nodes: Record<string, GuiNode>, ids: string[], order: stri
   return arr;
 }
 
-export function computeLayout(nodes: Record<string, GuiNode>, rootIds: string[], device: Device): LayoutResult {
-  const res: LayoutResult = { rects: {}, content: {}, canvas: {}, laidOut: new Set(), artboards: {} };
+/**
+ * @param origins canvas offset of each ScreenGui (screens side by side in the editor); unset = all at 0,0 like in game
+ */
+export function computeLayout(nodes: Record<string, GuiNode>, rootIds: string[], device: Device, origins?: Record<string, { x: number; y: number }>): LayoutResult {
+  const res: LayoutResult = { rects: {}, content: {}, canvas: {}, laidOut: new Set(), artboards: {}, clips: {}, unclipped: new Set() };
+  const tableCells = new Set<string>();
 
   const layoutChildren = (pid: string, canvasOverride?: Vec2) => {
     const parent = nodes[pid];
     const R = res.rects[pid];
     let base = R;
     if (parent.className === 'ScrollingFrame') {
-      const cs: UDim2 = parent.props.CanvasSize;
-      const cp: Vec2 = parent.props.CanvasPosition ?? { x: 0, y: 0 };
-      const cw = canvasOverride?.x ?? Math.max(resolve(cs.x, R.w), R.w);
-      const ch = canvasOverride?.y ?? Math.max(resolve(cs.y, R.h), R.h);
-      base = { x: R.x - cp.x, y: R.y - cp.y, w: cw, h: ch };
+      const pp = parent.props;
+      const cs: UDim2 = pp.CanvasSize;
+      const cp: Vec2 = pp.CanvasPosition ?? { x: 0, y: 0 };
+      // Vertical/HorizontalScrollBarInset: the canvas leaves room for the scroll bar (always, or when it shows)
+      const t = pp.ScrollBarThickness ?? 0;
+      const dir: string = pp.ScrollingDirection ?? 'XY';
+      const scrollsY = dir !== 'X' && (canvasOverride?.y ?? resolve(cs.y, R.h)) > R.h + 0.5;
+      const scrollsX = dir !== 'Y' && (canvasOverride?.x ?? resolve(cs.x, R.w)) > R.w + 0.5;
+      const insetX = pp.VerticalScrollBarInset === 'Always' || (pp.VerticalScrollBarInset === 'ScrollBar' && scrollsY) ? t : 0;
+      const insetY = pp.HorizontalScrollBarInset === 'Always' || (pp.HorizontalScrollBarInset === 'ScrollBar' && scrollsX) ? t : 0;
+      const vw = R.w - insetX;
+      const vh = R.h - insetY;
+      const cw = canvasOverride?.x ?? Math.max(resolve(cs.x, vw), vw);
+      const ch = canvasOverride?.y ?? Math.max(resolve(cs.y, vh), vh);
+      const left = pp.VerticalScrollBarPosition === 'Left' ? insetX : 0;
+      base = { x: R.x - cp.x + left, y: R.y - cp.y, w: cw, h: ch };
       res.canvas[pid] = base;
     }
     let C = base;
@@ -99,9 +145,12 @@ export function computeLayout(nodes: Record<string, GuiNode>, rootIds: string[],
     }
     res.content[pid] = C;
 
-    const kids = parent.children.filter((c) => nodes[c] && isGuiObject(nodes[c].className));
+    // cells of a UITableLayout were placed by the table (their row's own layout leaves them alone)
+    const kids = parent.children.filter((c) => nodes[c] && isGuiObject(nodes[c].className) && !tableCells.has(c));
     const list = findChild(nodes, pid, 'UIListLayout');
     const grid = list ? undefined : findChild(nodes, pid, 'UIGridLayout');
+    const pages = list || grid ? undefined : findChild(nodes, pid, 'UIPageLayout');
+    const table = list || grid || pages ? undefined : findChild(nodes, pid, 'UITableLayout');
 
     // default positioning
     const place = (id: string, w: number, h: number) => {
@@ -115,29 +164,28 @@ export function computeLayout(nodes: Record<string, GuiNode>, rootIds: string[],
       };
     };
     const sizeOf = (id: string): [number, number] => {
-      const s: UDim2 = nodes[id].props.Size;
-      return constrain(nodes, id, resolve(s.x, C.w), resolve(s.y, C.h));
+      const n = nodes[id];
+      const s: UDim2 = n.props.Size;
+      // SizeConstraint: which side of the parent the Scale parts are measured against
+      const sc: string = n.props.SizeConstraint ?? 'RelativeXY';
+      let w = resolve(s.x, sc === 'RelativeYY' ? C.h : C.w);
+      let h = resolve(s.y, sc === 'RelativeXX' ? C.w : C.h);
+      const auto: string = n.props.AutomaticSize ?? 'None';
+      if (auto !== 'None') [w, h] = autoGrow(id, w, h, auto);
+      return constrain(nodes, id, w, h);
     };
 
     if (list) {
-      const vertical = list.props.FillDirection === 'Vertical';
-      const padPx = resolve(list.props.Padding, vertical ? C.h : C.w);
       const visible = sortChildren(nodes, kids.filter((k) => nodes[k].props.Visible !== false), list.props.SortOrder);
-      const sizes = visible.map(sizeOf);
-      const total = sizes.reduce((acc, [w, h]) => acc + (vertical ? h : w), 0) + padPx * Math.max(0, visible.length - 1);
-      const mainAlign = vertical ? list.props.VerticalAlignment : list.props.HorizontalAlignment;
-      const mainLen = vertical ? C.h : C.w;
-      let cursor = (vertical ? C.y : C.x) + (mainAlign === 'Center' ? (mainLen - total) / 2 : mainAlign === 'Bottom' || mainAlign === 'Right' ? mainLen - total : 0);
-      visible.forEach((id, i) => {
-        const [w, h] = sizes[i];
-        const crossAlign = vertical ? list.props.HorizontalAlignment : list.props.VerticalAlignment;
-        const crossLen = vertical ? C.w : C.h;
-        const crossSize = vertical ? w : h;
-        const cross = (vertical ? C.x : C.y) + (crossAlign === 'Center' ? (crossLen - crossSize) / 2 : crossAlign === 'Right' || crossAlign === 'Bottom' ? crossLen - crossSize : 0);
-        res.rects[id] = vertical ? { x: cross, y: cursor, w, h } : { x: cursor, y: cross, w, h };
-        cursor += (vertical ? h : w) + padPx;
-        res.laidOut.add(id);
-      });
+      layoutList(nodes, list, visible, visible.map(sizeOf), C, res);
+      for (const k of kids) if (!res.rects[k]) place(k, ...sizeOf(k));
+    } else if (pages) {
+      const visible = sortChildren(nodes, kids.filter((k) => nodes[k].props.Visible !== false), pages.props.SortOrder);
+      layoutPages(pages, visible, visible.map(sizeOf), C, res);
+      for (const k of kids) if (!res.rects[k]) place(k, ...sizeOf(k));
+    } else if (table) {
+      const visible = sortChildren(nodes, kids.filter((k) => nodes[k].props.Visible !== false), table.props.SortOrder);
+      layoutTable(nodes, table, visible, C, res, tableCells);
       for (const k of kids) if (!res.rects[k]) place(k, ...sizeOf(k));
     } else if (grid) {
       const cell: UDim2 = grid.props.CellSize;
@@ -202,8 +250,57 @@ export function computeLayout(nodes: Record<string, GuiNode>, rootIds: string[],
     }
   };
 
-  // world GUIs without a saved position line up to the right of the screen
-  let autoX = device.w + 160;
+  /**
+   * AutomaticSize: grow the element (never shrink it) to fit its text and children, on the X and/or Y axis.
+   * Children are laid out once at the element's own size to measure them.
+   */
+  const autoGrow = (id: string, w: number, h: number, auto: string): [number, number] => {
+    const n = nodes[id];
+    const pad = findChild(nodes, id, 'UIPadding');
+    const pl = pad ? resolve(pad.props.PaddingLeft, w) : 0;
+    const pr = pad ? resolve(pad.props.PaddingRight, w) : 0;
+    const pt = pad ? resolve(pad.props.PaddingTop, h) : 0;
+    const pb = pad ? resolve(pad.props.PaddingBottom, h) : 0;
+    let needW = 0;
+    let needH = 0;
+    const p = n.props;
+    if (isText(n.className) && !p.TextScaled && p.Text) {
+      const text = p.RichText ? stripRichText(p.Text) : p.Text;
+      // grows sideways: one line per paragraph; only taller: wrap at the current width
+      const wrapAt = auto === 'Y' && p.TextWrapped ? Math.max(1, w - pl - pr) : null;
+      const m = measureText(text, p.FontFace, p.TextSize, p.LineHeight ?? 1, wrapAt);
+      needW = m.w + pl + pr;
+      needH = m.h + pt + pb;
+    }
+    const kids = n.children.filter((c) => nodes[c] && isGuiObject(nodes[c].className) && nodes[c].props.Visible !== false);
+    if (kids.length) {
+      const saved = res.rects[id];
+      res.rects[id] = { x: 0, y: 0, w, h };
+      layoutChildren(id);
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+      for (const k of kids) {
+        const r = res.rects[k];
+        if (!r) continue;
+        minX = Math.min(minX, r.x);
+        minY = Math.min(minY, r.y);
+        maxX = Math.max(maxX, r.x + r.w);
+        maxY = Math.max(maxY, r.y + r.h);
+      }
+      if (maxX > -Infinity) {
+        needW = Math.max(needW, maxX - Math.min(minX, pl) + pr);
+        needH = Math.max(needH, maxY - Math.min(minY, pt) + pb);
+      }
+      if (saved) res.rects[id] = saved;
+      else delete res.rects[id];
+    }
+    return [auto.includes('X') ? Math.max(w, needW) : w, auto.includes('Y') ? Math.max(h, needH) : h];
+  };
+
+  // world GUIs without a saved position line up to the right of the screens
+  let autoX = Math.max(0, ...Object.values(origins ?? {}).map((o) => o.x)) + device.w + 160;
   for (const rid of rootIds) {
     const root = nodes[rid];
     if (!root) continue;
@@ -213,9 +310,225 @@ export function computeLayout(nodes: Record<string, GuiNode>, rootIds: string[],
       if (!root.artboard) autoX += w + 120;
       res.artboards[rid] = res.rects[rid] = { x: pos.x, y: pos.y, w, h };
     } else {
-      res.rects[rid] = screenRect(root, device);
+      const r = screenRect(root, device);
+      const o = origins?.[rid] ?? { x: 0, y: 0 };
+      res.rects[rid] = { ...r, x: r.x + o.x, y: r.y + o.y };
     }
     layoutChildren(rid);
+    if (root.className === 'ScreenGui' && device.safe) {
+      const o = origins?.[rid] ?? { x: 0, y: 0 };
+      const s = safeArea(device);
+      const safe = { ...s, x: s.x + o.x, y: s.y + o.y };
+      const mode = screenInsets(root);
+      // ClipToDeviceSafeArea (ignored with ScreenInsets None)
+      if (root.props.ClipToDeviceSafeArea !== false && mode !== 'None') res.clips[rid] = safe;
+      // SafeAreaCompatibility: a fullscreen element (covering the safe area) is stretched over the cut-outs
+      if ((root.props.SafeAreaCompatibility ?? 'FullscreenExtension') === 'FullscreenExtension') {
+        for (const k of root.children) {
+          const kr = res.rects[k];
+          if (!kr || !isGuiObject(nodes[k]?.className) || nodes[k].props.Visible === false) continue;
+          const covers = kr.x <= safe.x + 0.5 && kr.y <= safe.y + 0.5 && kr.x + kr.w >= safe.x + safe.w - 0.5 && kr.y + kr.h >= safe.y + safe.h - 0.5;
+          if (!covers) continue;
+          res.rects[k] = { x: o.x, y: o.y, w: device.w, h: device.h };
+          res.unclipped.add(k);
+          layoutChildren(k);
+        }
+      }
+    }
   }
   return res;
+}
+
+// ---------------------------------------------------------------------------
+// UIListLayout with flex (HorizontalFlex / VerticalFlex / Wraps / ItemLineAlignment + UIFlexItem)
+
+const START = new Set(['Left', 'Top']);
+const END = new Set(['Right', 'Bottom']);
+
+function layoutList(nodes: Record<string, GuiNode>, list: GuiNode, ids: string[], sizes: [number, number][], C: Rect, res: LayoutResult) {
+  const lp = list.props;
+  const vertical = lp.FillDirection === 'Vertical';
+  const pad = resolve(lp.Padding, vertical ? C.h : C.w);
+  const mainLen = vertical ? C.h : C.w;
+  const crossLen = vertical ? C.w : C.h;
+  const mainFlex: string = (vertical ? lp.VerticalFlex : lp.HorizontalFlex) ?? 'None';
+  const crossFlex: string = (vertical ? lp.HorizontalFlex : lp.VerticalFlex) ?? 'None';
+  const mainAlign: string = vertical ? lp.VerticalAlignment : lp.HorizontalAlignment;
+  const crossAlign: string = vertical ? lp.HorizontalAlignment : lp.VerticalAlignment;
+  const items = ids.map((id, i) => {
+    const flex = findChild(nodes, id, 'UIFlexItem');
+    const [w, h] = sizes[i];
+    let mode: string = flex?.props.FlexMode ?? 'None';
+    if (mode === 'None' && mainFlex === 'Fill') mode = 'Fill';
+    const grow = mode === 'Grow' || mode === 'Fill' ? 1 : mode === 'Custom' ? (flex?.props.GrowRatio ?? 0) : 0;
+    const shrink = mode === 'Shrink' || mode === 'Fill' ? 1 : mode === 'Custom' ? (flex?.props.ShrinkRatio ?? 0) : 0;
+    const own: string = flex?.props.ItemLineAlignment ?? 'Automatic';
+    return { id, main: vertical ? h : w, cross: vertical ? w : h, grow, shrink, align: own !== 'Automatic' ? own : (lp.ItemLineAlignment ?? 'Automatic') };
+  });
+
+  // lines (one, unless Wraps and the items don't fit)
+  const lines: (typeof items)[] = [];
+  let line: typeof items = [];
+  let used = 0;
+  for (const it of items) {
+    if (lp.Wraps && line.length && used + pad + it.main > mainLen + 0.01) {
+      lines.push(line);
+      line = [];
+      used = 0;
+    }
+    used += (line.length ? pad : 0) + it.main;
+    line.push(it);
+  }
+  if (line.length) lines.push(line);
+
+  // cross size of each line: the whole box for a single line, else the tallest item
+  const single = lines.length <= 1 && !lp.Wraps;
+  const lineCross = lines.map((l) => (single ? crossLen : Math.max(0, ...l.map((it) => it.cross))));
+  const totalCross = lineCross.reduce((a, b) => a + b, 0) + pad * Math.max(0, lines.length - 1);
+  let crossStart = 0;
+  let crossGap = pad;
+  if (!single) {
+    const free = crossLen - totalCross;
+    const n = lines.length;
+    if (crossFlex === 'Fill' && free > 0) lineCross.forEach((_, i) => (lineCross[i] += free / n));
+    else if (crossFlex === 'SpaceBetween' && n > 1) crossGap = pad + Math.max(0, free) / (n - 1);
+    else if (crossFlex === 'SpaceAround') [crossGap, crossStart] = [pad + Math.max(0, free) / n, Math.max(0, free) / n / 2];
+    else if (crossFlex === 'SpaceEvenly') [crossGap, crossStart] = [pad + Math.max(0, free) / (n + 1), Math.max(0, free) / (n + 1)];
+    else crossStart = crossAlign === 'Center' ? free / 2 : END.has(crossAlign) ? free : 0;
+  }
+
+  let crossPos = (vertical ? C.x : C.y) + crossStart;
+  lines.forEach((l, li) => {
+    const sizesMain = l.map((it) => it.main);
+    let free = mainLen - sizesMain.reduce((a, b) => a + b, 0) - pad * Math.max(0, l.length - 1);
+    // grow / shrink by ratio
+    const g = l.reduce((a, it) => a + it.grow, 0);
+    const s = l.reduce((a, it) => a + it.shrink, 0);
+    if (free > 0 && g > 0) {
+      l.forEach((it, i) => (sizesMain[i] += (free * it.grow) / g));
+      free = 0;
+    } else if (free < 0 && s > 0) {
+      l.forEach((it, i) => (sizesMain[i] = Math.max(0, sizesMain[i] + (free * it.shrink) / s)));
+      free = 0;
+    }
+    let start = 0;
+    let gap = pad;
+    const n = l.length;
+    if (mainFlex === 'SpaceBetween' && n > 1 && free > 0) gap = pad + free / (n - 1);
+    else if (mainFlex === 'SpaceAround' && free > 0) [gap, start] = [pad + free / n, free / n / 2];
+    else if (mainFlex === 'SpaceEvenly' && free > 0) [gap, start] = [pad + free / (n + 1), free / (n + 1)];
+    else start = mainAlign === 'Center' ? free / 2 : END.has(mainAlign) ? free : 0;
+    let cursor = (vertical ? C.y : C.x) + start;
+    const lc = lineCross[li];
+    l.forEach((it, i) => {
+      const align = it.align === 'Automatic' ? (crossAlign === 'Center' ? 'Center' : END.has(crossAlign) ? 'End' : START.has(crossAlign) ? 'Start' : 'Start') : it.align;
+      const crossSize = align === 'Stretch' ? lc : it.cross;
+      const c = crossPos + (align === 'Center' ? (lc - crossSize) / 2 : align === 'End' ? lc - crossSize : 0);
+      const m = sizesMain[i];
+      res.rects[it.id] = vertical ? { x: c, y: cursor, w: crossSize, h: m } : { x: cursor, y: c, w: m, h: crossSize };
+      res.laidOut.add(it.id);
+      cursor += m + gap;
+    });
+    crossPos += lc + crossGap;
+  });
+}
+
+// ---------------------------------------------------------------------------
+// UIPageLayout: pages side by side along FillDirection, scrolled so the current page sits in place
+
+function layoutPages(pages: GuiNode, ids: string[], sizes: [number, number][], C: Rect, res: LayoutResult) {
+  const p = pages.props;
+  const vertical = p.FillDirection === 'Vertical';
+  const pad = resolve(p.Padding, vertical ? C.h : C.w);
+  // __page: Preview's (animated, fractional) page; page: the one picked in the editor
+  const n = ids.length;
+  const cur = Math.max(0, Math.min(n - 1, (p.__page as number | undefined) ?? pages.page ?? 0));
+  const starts: number[] = [];
+  let acc = 0;
+  ids.forEach((_, i) => {
+    starts.push(acc);
+    acc += (vertical ? sizes[i][1] : sizes[i][0]) + pad;
+  });
+  const i0 = Math.floor(cur);
+  const frac = cur - i0;
+  const startOf = (i: number) => starts[Math.min(n - 1, i)] ?? 0;
+  const scroll = startOf(i0) + (startOf(i0 + 1) - startOf(i0)) * frac;
+  const curSize = sizes[Math.min(n - 1, Math.round(cur))] ?? [0, 0];
+  const mainLen = vertical ? C.h : C.w;
+  const crossLen = vertical ? C.w : C.h;
+  const mainAlign: string = vertical ? p.VerticalAlignment : p.HorizontalAlignment;
+  const crossAlign: string = vertical ? p.HorizontalAlignment : p.VerticalAlignment;
+  const curMain = vertical ? curSize[1] : curSize[0];
+  const origin = (vertical ? C.y : C.x) + (mainAlign === 'Center' ? (mainLen - curMain) / 2 : END.has(mainAlign) ? mainLen - curMain : 0) - scroll;
+  ids.forEach((id, i) => {
+    const [w, h] = sizes[i];
+    const cs = vertical ? w : h;
+    const c = (vertical ? C.x : C.y) + (crossAlign === 'Center' ? (crossLen - cs) / 2 : END.has(crossAlign) ? crossLen - cs : 0);
+    const m = origin + starts[i];
+    res.rects[id] = vertical ? { x: c, y: m, w, h } : { x: m, y: c, w, h };
+    res.laidOut.add(id);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// UITableLayout: children are rows (RowMajor) or columns (ColumnMajor); their children are the cells
+
+function layoutTable(nodes: Record<string, GuiNode>, table: GuiNode, lines: string[], C: Rect, res: LayoutResult, cells: Set<string>) {
+  const p = table.props;
+  const rowMajor = p.MajorAxis !== 'ColumnMajor';
+  const padX = resolve(p.Padding.x, C.w);
+  const padY = resolve(p.Padding.y, C.h);
+  const grid = lines.map((l) => sortChildren(nodes, nodes[l].children.filter((c) => nodes[c] && isGuiObject(nodes[c].className) && nodes[c].props.Visible !== false), p.SortOrder));
+  const sizeIn = (id: string): [number, number] => {
+    const s: UDim2 = nodes[id].props.Size;
+    return constrain(nodes, id, resolve(s.x, C.w), resolve(s.y, C.h));
+  };
+  const nRows = rowMajor ? lines.length : Math.max(0, ...grid.map((g) => g.length));
+  const nCols = rowMajor ? Math.max(0, ...grid.map((g) => g.length)) : lines.length;
+  const colW = new Array(nCols).fill(0);
+  const rowH = new Array(nRows).fill(0);
+  grid.forEach((g, li) =>
+    g.forEach((cell, ci) => {
+      const [w, h] = sizeIn(cell);
+      const r = rowMajor ? li : ci;
+      const c = rowMajor ? ci : li;
+      colW[c] = Math.max(colW[c], w);
+      rowH[r] = Math.max(rowH[r], h);
+    }),
+  );
+  // lines with no cells keep their own size along the major axis
+  lines.forEach((l, li) => {
+    if (grid[li].length) return;
+    const [w, h] = sizeIn(l);
+    if (rowMajor) rowH[li] = Math.max(rowH[li] ?? 0, h);
+    else colW[li] = Math.max(colW[li] ?? 0, w);
+  });
+  const sum = (a: number[], gap: number) => a.reduce((x, y) => x + y, 0) + gap * Math.max(0, a.length - 1);
+  if (p.FillEmptySpaceColumns && nCols) {
+    const extra = C.w - sum(colW, padX);
+    if (extra > 0) colW.forEach((_, i) => (colW[i] += extra / nCols));
+  }
+  if (p.FillEmptySpaceRows && nRows) {
+    const extra = C.h - sum(rowH, padY);
+    if (extra > 0) rowH.forEach((_, i) => (rowH[i] += extra / nRows));
+  }
+  const tw = sum(colW, padX);
+  const th = sum(rowH, padY);
+  const ha: string = p.HorizontalAlignment;
+  const va: string = p.VerticalAlignment;
+  const x0 = C.x + (ha === 'Center' ? (C.w - tw) / 2 : ha === 'Right' ? C.w - tw : 0);
+  const y0 = C.y + (va === 'Center' ? (C.h - th) / 2 : va === 'Bottom' ? C.h - th : 0);
+  const colX = colW.map((_, i) => x0 + colW.slice(0, i).reduce((a, b) => a + b + padX, 0));
+  const rowY = rowH.map((_, i) => y0 + rowH.slice(0, i).reduce((a, b) => a + b + padY, 0));
+  lines.forEach((l, li) => {
+    res.rects[l] = rowMajor ? { x: x0, y: rowY[li] ?? y0, w: tw, h: rowH[li] ?? 0 } : { x: colX[li] ?? x0, y: y0, w: colW[li] ?? 0, h: th };
+    res.laidOut.add(l);
+    grid[li].forEach((cell, ci) => {
+      const r = rowMajor ? li : ci;
+      const c = rowMajor ? ci : li;
+      res.rects[cell] = { x: colX[c], y: rowY[r], w: colW[c], h: rowH[r] };
+      res.laidOut.add(cell);
+      cells.add(cell);
+    });
+  });
 }

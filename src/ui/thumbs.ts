@@ -88,3 +88,18 @@ export async function lookupUser(username: string): Promise<{ id: number; name: 
     return null;
   }
 }
+
+const sizes = new Map<string, { w: number; h: number } | null>();
+/** Natural size of an image (undefined until it has loaded; re-renders subscribers when it has) */
+export function imageSize(src: string): { w: number; h: number } | undefined {
+  if (!sizes.has(src)) {
+    sizes.set(src, null);
+    const img = new Image();
+    img.onload = () => {
+      sizes.set(src, { w: img.naturalWidth, h: img.naturalHeight });
+      notify();
+    };
+    img.src = src;
+  }
+  return sizes.get(src) ?? undefined;
+}

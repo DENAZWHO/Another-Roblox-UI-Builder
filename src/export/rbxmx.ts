@@ -5,6 +5,7 @@ import type { ClassName, Doc, GuiNode } from '../model/types';
 import { hexRgb, normalizeAsset } from './luau';
 import { rootScript } from './behavior';
 import { exportedProps } from '../model/richColors';
+import { gameStartDoc } from '../model/screens';
 
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const f = (n: number) => (n === Infinity ? 'INF' : n === -Infinity ? '-INF' : String(+(+n).toFixed(6)));
@@ -55,7 +56,8 @@ export interface RbxmxOptions {
   behaviorScript: boolean;
 }
 
-export function generateRbxmx(doc: Doc, opts: RbxmxOptions): string {
+export function generateRbxmx(fullDoc: Doc, opts: RbxmxOptions): string {
+  const doc = gameStartDoc(fullDoc);
   let ref = 0;
   const out: string[] = [
     '<roblox xmlns:xmime="http://www.w3.org/2005/05/xmlmime" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://www.roblox.com/roblox.xsd" version="4">',

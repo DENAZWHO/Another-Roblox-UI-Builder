@@ -154,6 +154,19 @@ local function build(node, rootId: string): Instance?
 			c.Parent = inst
 		end
 	end
+	-- Path2D control points (not a property: set with SetControlPoints)
+	if node.cp and inst:IsA("Path2D") then
+		pcall(function()
+			local u = function(a)
+				return UDim2.new(a[1], a[2], a[3], a[4])
+			end
+			local points = {}
+			for _, cp in node.cp do
+				table.insert(points, Path2DControlPoint.new(u(cp[1]), u(cp[2]), u(cp[3])))
+			end
+			(inst :: any):SetControlPoints(points)
+		end)
+	end
 	return inst
 end
 
@@ -165,7 +178,11 @@ end
 local SCALE_PROPS = {
 	UIStroke = { "Thickness" },
 	UITextSizeConstraint = { "MaxTextSize", "MinTextSize" },
-	UICorner = { "CornerRadius" },
+	UICorner = { "CornerRadius", "TopLeftRadius", "TopRightRadius", "BottomRightRadius", "BottomLeftRadius" },
+	UIShadow = { "BlurRadius", "Offset", "Spread" },
+	Path2D = { "Thickness" },
+	UIPageLayout = { "Padding" },
+	UITableLayout = { "Padding" },
 	UIPadding = { "PaddingTop", "PaddingBottom", "PaddingLeft", "PaddingRight" },
 	UIListLayout = { "Padding" },
 	UIGridLayout = { "CellSize", "CellPadding" },
@@ -193,7 +210,13 @@ local function storeDesignValues(root: Instance)
 		local props = SCALE_PROPS[d.ClassName]
 		if props then
 			for _, prop in props do
-				d:SetAttribute("UIB_" .. prop, (d :: any)[prop])
+				-- (pcall: older Studio builds may not have every property, e.g. per-corner radii)
+				local ok, value = pcall(function()
+					return (d :: any)[prop]
+				end)
+				if ok then
+					d:SetAttribute("UIB_" .. prop, value)
+				end
 			end
 		end
 	end

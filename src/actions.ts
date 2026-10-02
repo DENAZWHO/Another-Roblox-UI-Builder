@@ -4,16 +4,18 @@ import { computeLayout, type LayoutResult } from './model/layout';
 import { applyOverrides, evaluateClip, tweenEnd } from './model/animation';
 import {
   attach, createNode, descendants, detach, extractFragment, insertFragment, pathTo, rectToProps, removeNode,
-  topLevelOnly, uid, unionRect, type Fragment, type Units,
+  topLevelOnly, uid, unionRect, identifier, type Fragment, type Units,
 } from './model/doc';
 import {
-  ANIMATABLE_PROPS, CONTAINER_CLASSES, hasProp, isGuiObject, isModifier, isRoot, isText, isWorldGui, modifierAllowed, SINGLETON_MODIFIERS,
+  ANIMATABLE_PROPS, CONTAINER_CLASSES, hasProp, isGuiObject, isModifier, isRoot, isText, isWorldGui, modifierAllowed, SINGLETON_MODIFIERS, LAYOUT_CLASSES, CORNER_PROPS,
 } from './model/schema';
 import type { AnimClip, ClassName, Doc, Effect, EffectKind, GuiNode, ModifierClass, Rect, RootClass, TriggerKind, Tween, UDim } from './model/types';
 import { EFFECTS } from './model/effects';
 import { applyPixelScale, designSize, pixelScaleFactor } from './model/pixelScale';
 import { addPrefab, updatePrefab, type Prefab } from './model/prefabs';
 import { buildFragment, rootStarter } from './model/presets';
+import { ANIM_TEMPLATES } from './model/animTemplates';
+import { rootOrigins, screenOfRoot, screenRoots, screensOf, screensRight } from './model/screens';
 
 const S = () => useStore.getState();
 
@@ -40,7 +42,7 @@ export function effectiveNodes(doc = S().doc): Record<string, GuiNode> {
 
 export function layoutNow(): LayoutResult {
   const { doc } = S();
-  return computeLayout(applyPixelScale(effectiveNodes(doc), doc.rootIds, pixelScaleFactor(doc)), doc.rootIds, doc.device);
+  return computeLayout(applyPixelScale(effectiveNodes(doc), doc.rootIds, pixelScaleFactor(doc)), doc.rootIds, doc.device, rootOrigins(doc));
 }
 
 // ---------------------------------------------------------------------------
@@ -183,12 +185,14 @@ export function insertNode(className: ClassName, opts: { parentId?: string; rect
 export function insertRoot(cls: RootClass) {
   const lay = layoutNow();
   const { doc } = S();
-  const right = Math.max(doc.device.w + 40, ...Object.values(lay.artboards).map((r) => r.x + r.w));
+  const right = Math.max(screensRight(doc) + 40, ...Object.values(lay.artboards).map((r) => r.x + r.w));
   const frag = buildFragment([rootStarter(cls)]);
+  const screen = activeScreenId();
   let id = '';
   S().update((d) => {
     [id] = insertFragment(d as Doc, frag, null);
     if (isWorldGui(cls)) d.nodes[id].artboard = { x: Math.round(right + 120), y: 0 };
+    else if (d.screens?.length) d.nodes[id].screen = screen;
   });
   S().select([id]);
   return id;
@@ -206,7 +210,12 @@ export function setCornerRadius(ids: string[], radius: UDim) {
     if (missing.length) addModifier(missing, 'UICorner');
     const corners = ids.flatMap((id) => S().doc.nodes[id]?.children.filter((c) => S().doc.nodes[c].className === 'UICorner') ?? []);
     S().update((d) => {
-      for (const c of corners) d.nodes[c].props.CornerRadius = { ...radius };
+      for (const c of corners) {
+        const p = d.nodes[c].props;
+        p.CornerRadius = { ...radius };
+        // like Roblox, CornerRadius sets every corner
+        for (const k of CORNER_PROPS) if (p[k]) p[k] = { ...radius };
+      }
     }, { coalesce: 'corner:' + ids.join() });
   });
 }
@@ -262,10 +271,8 @@ export function addModifier(targetIds: string[], cls: ModifierClass): string[] {
       const p = d.nodes[id];
       if (!p || !modifierAllowed(cls, p.className)) continue;
       if (SINGLETON_MODIFIERS.includes(cls) && p.children.some((c) => d.nodes[c].className === cls)) continue;
-      if (cls === 'UIListLayout' || cls === 'UIGridLayout') {
-        const other = cls === 'UIListLayout' ? 'UIGridLayout' : 'UIListLayout';
-        const existing = p.children.find((c) => d.nodes[c].className === other);
-        if (existing) removeNode(d as Doc, existing);
+      if (LAYOUT_CLASSES.includes(cls)) {
+        for (const other of p.children.filter((c) => d.nodes[c].className !== cls && LAYOUT_CLASSES.includes(d.nodes[c].className as ModifierClass))) removeNode(d as Doc, other);
       }
       const m = createNode(cls);
       d.nodes[m.id] = m as Draft<GuiNode>;
@@ -563,7 +570,7 @@ function moveNodesInner(ids: string[], parentId: string, index: number) {
     }
   });
   // keep on-screen placement
-  const after = computeLayout(S().doc.nodes, S().doc.rootIds, S().doc.device);
+  const after = computeLayout(S().doc.nodes, S().doc.rootIds, S().doc.device, rootOrigins(S().doc));
   S().update((d) => {
     for (const id of ids) {
       const n = d.nodes[id];
@@ -811,7 +818,7 @@ const contains = (outer: Rect, inner: Rect) =>
  * (e.g. a button placed on a card with a locked aspect ratio).
  */
 export function overlapIssues(doc = S().doc): OverlapIssue[] {
-  const lay = computeLayout(doc.nodes, doc.rootIds, doc.device);
+  const lay = computeLayout(doc.nodes, doc.rootIds, doc.device, rootOrigins(doc));
   const out: OverlapIssue[] = [];
   for (const r of doc.rootIds) {
     if (doc.nodes[r]?.className !== 'ScreenGui') continue;
@@ -1091,5 +1098,127 @@ export function insertFragmentAtPoint(fragment: Fragment, opts: { parentId?: str
     }
     S().select(roots);
     return roots;
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Animation templates
+
+const POINTER_TRIGGERS = ['click', 'hoverEnter', 'hoverLeave', 'pressDown', 'pressUp'];
+
+/** Make a clip from a ready-made animation for an element (adds a UIScale when the template needs one) */
+export function addTemplateClip(nodeId: string, templateId: string): string | null {
+  const t = ANIM_TEMPLATES.find((x) => x.id === templateId);
+  const node0 = S().doc.nodes[nodeId];
+  if (!t || !node0 || !isGuiObject(node0.className)) return null;
+  return batch(() => {
+    let scaleId = '';
+    if (t.needsScale) {
+      const nodes = S().doc.nodes;
+      scaleId = nodes[nodeId].children.find((c) => nodes[c]?.className === 'UIScale') ?? addModifier([nodeId], 'UIScale')[0] ?? '';
+    }
+    const { doc } = S();
+    const node = doc.nodes[nodeId];
+    const lay = layoutNow();
+    const rect = lay.rects[nodeId] ?? { x: 0, y: 0, w: 100, h: 100 };
+    const parent = lay.content[node.parentId!] ?? lay.rects[node.parentId!] ?? { x: 0, y: 0, w: doc.device.w, h: doc.device.h };
+    const tweens = t.build({ node, doc, rect, parent, scaleId }).map((x) => ({ ...x, id: uid() }));
+    const names = new Set(doc.clips.map((c) => c.name));
+    let name = `${node.name} ${t.name}`;
+    for (let i = 2; names.has(name); i++) name = `${node.name} ${t.name} ${i}`;
+    const clip: AnimClip = {
+      id: uid(), name, tweens, trigger: t.trigger,
+      triggerNodeId: POINTER_TRIGGERS.includes(t.trigger) ? nodeId : undefined,
+      ...(t.loop ? { loop: true, loopDelay: t.loopDelay ?? 0 } : {}),
+    };
+    S().update((d) => {
+      d.clips.push(clip);
+    });
+    useStore.setState({ activeClipId: clip.id });
+    return clip.id;
+  });
+}
+
+/** Play a clip on the canvas (switches to Animate mode) */
+export function previewClip(clipId: string) {
+  useStore.setState({ mode: 'animate', activeClipId: clipId, playhead: 0, playing: true, selectedTweenId: null });
+}
+
+// ---------------------------------------------------------------------------
+// Screens (pages of UI, each on its own artboard)
+
+/** The screen the selection is on (or the first one) */
+export function activeScreenId(): string {
+  const { doc, selection } = S();
+  const root = selection.map((id) => pathTo(doc.nodes, id)[0]).find((r) => doc.nodes[r]?.className === 'ScreenGui');
+  return root ? screenOfRoot(doc, root).id : screensOf(doc)[0].id;
+}
+
+/** Add a screen with an empty ScreenGui on it; returns the screen id */
+export function addScreen(name?: string): string {
+  const id = uid();
+  return batch(() => {
+    const names = new Set(screensOf(S().doc).map((s) => s.name));
+    let n = name ?? 'Screen 2';
+    for (let i = 2; names.has(n); i++) n = name ? `${name} ${i}` : `Screen ${i}`;
+    const gui = createNode('ScreenGui', {}, identifier(n).replace(/^_/, '') || 'Screen');
+    S().update((d) => {
+      // the implicit first screen becomes a real one
+      if (!d.screens?.length) d.screens = [{ id: 'main', name: 'Main', startVisible: true }];
+      d.screens.push({ id, name: n });
+      gui.screen = id;
+      d.nodes[gui.id] = gui as Draft<GuiNode>;
+      d.rootIds.push(gui.id);
+    });
+    S().select([gui.id]);
+    return id;
+  });
+}
+
+export function renameScreen(id: string, name: string) {
+  S().update((d) => {
+    if (!d.screens?.length) d.screens = [{ id: 'main', name: 'Main', startVisible: true }];
+    const s = d.screens.find((x) => x.id === id);
+    if (!s || !name.trim()) return;
+    // a ScreenGui still named after the screen follows the new name
+    const old = identifier(s.name).replace(/^_/, '');
+    for (const r of d.rootIds) {
+      const n = d.nodes[r];
+      if (n?.className === 'ScreenGui' && (n.screen ?? d.screens[0].id) === id && n.name === old) n.name = identifier(name.trim()).replace(/^_/, '') || n.name;
+    }
+    s.name = name.trim();
+  });
+}
+
+/** Shown when the game starts? */
+export function setScreenStart(id: string, on: boolean) {
+  S().update((d) => {
+    if (!d.screens?.length) d.screens = [{ id: 'main', name: 'Main', startVisible: true }];
+    const list = d.screens;
+    list.forEach((s, i) => void (s.startVisible ??= i === 0));
+    const s = list.find((x) => x.id === id);
+    if (s) s.startVisible = on;
+  });
+}
+
+/** Delete a screen and its ScreenGuis (the last screen can't be deleted) */
+export function deleteScreen(id: string) {
+  const { doc } = S();
+  const list = screensOf(doc);
+  if (list.length < 2) return;
+  const roots = screenRoots(doc, id);
+  S().update((d) => {
+    for (const r of roots) removeNode(d as Doc, r);
+    d.screens = d.screens!.filter((s) => s.id !== id);
+    // remaining ScreenGuis that pointed at it fall back to the first screen
+    for (const r of d.rootIds) if (d.nodes[r]?.screen === id) delete d.nodes[r].screen;
+  });
+  sanitize();
+}
+
+export function moveRootToScreen(rootId: string, screenId: string) {
+  S().update((d) => {
+    if (!d.screens?.length) d.screens = [{ id: 'main', name: 'Main', startVisible: true }];
+    if (d.nodes[rootId]) d.nodes[rootId].screen = screenId;
   });
 }

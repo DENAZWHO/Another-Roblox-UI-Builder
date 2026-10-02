@@ -271,6 +271,22 @@ function wrapLines(text: string, maxW: number, c: CanvasRenderingContext2D, wrap
   return { lines, width: widest };
 }
 
+const measureCache = new Map<string, { w: number; h: number }>();
+
+/** Size of text at a given TextSize (AutomaticSize). wrapWidth: wrap at this width, null = one line per paragraph. */
+export function measureText(text: string, font: FontValue, size: number, lineHeight: number, wrapWidth: number | null): { w: number; h: number } {
+  const key = `${text}|${font.family}|${font.weight}|${font.style}|${size}|${lineHeight}|${wrapWidth === null ? '-' : Math.round(wrapWidth)}|${fontEpoch}`;
+  const hit = measureCache.get(key);
+  if (hit) return hit;
+  const c = measureCtx();
+  c.font = cssFont(font, size);
+  const r = wrapLines(text, wrapWidth ?? Infinity, c, wrapWidth !== null);
+  const out = { w: Math.ceil(r.width), h: Math.ceil(r.lines * size * lineHeight * lineFactor(font)) };
+  if (measureCache.size > 5000) measureCache.clear();
+  measureCache.set(key, out);
+  return out;
+}
+
 const fitCache = new Map<string, number>();
 
 /** Largest integer text size that fits in w×h (Roblox TextScaled behaviour, capped at 100). */
@@ -303,6 +319,7 @@ const fontListeners = new Set<() => void>();
 function notifyFonts() {
   fontEpoch++;
   fitCache.clear();
+  measureCache.clear();
   fontListeners.forEach((cb) => cb());
 }
 let watching = false;

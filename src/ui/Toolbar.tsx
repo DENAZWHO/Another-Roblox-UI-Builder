@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { ChevronDown, Code, Hand, Keyboard, MousePointer2, Pipette, Play, Redo2, Undo2, Cable, Menu, UserRound } from 'lucide-react';
+import { ChevronDown, Code, Hand, Keyboard, MousePointer2, PenTool, Pipette, Play, Redo2, Undo2, Cable, Menu, UserRound } from 'lucide-react';
 import { pickColorForSelection } from './QuickBar';
 import { insertFragmentAt, insertionParent } from '../actions';
 import { PRESETS } from '../model/presets';
@@ -11,7 +11,7 @@ import { importRbxmx, newDocument, openProject, saveProject } from '../files';
 import { useSyncStatus } from '../sync';
 
 const TOOL_GROUPS: { key: string; tools: { cls: GuiObjectClass; key: string }[] }[] = [
-  { key: 'frame', tools: [{ cls: 'Frame', key: 'F' }, { cls: 'ScrollingFrame', key: 'S' }, { cls: 'CanvasGroup', key: 'G' }, { cls: 'ViewportFrame', key: '' }] },
+  { key: 'frame', tools: [{ cls: 'Frame', key: 'F' }, { cls: 'ScrollingFrame', key: 'S' }, { cls: 'CanvasGroup', key: 'G' }, { cls: 'ViewportFrame', key: '' }, { cls: 'VideoFrame', key: '' }] },
   { key: 'text', tools: [{ cls: 'TextLabel', key: 'T' }, { cls: 'TextButton', key: 'B' }, { cls: 'TextBox', key: 'X' }] },
   { key: 'image', tools: [{ cls: 'ImageLabel', key: 'I' }, { cls: 'ImageButton', key: 'U' }] },
 ];
@@ -148,6 +148,9 @@ export function Toolbar() {
           </div>
           <div className={`tool ${tool === 'hand' ? 'on' : ''}`}>
             <button title="Hand (H) — or hold Space" onClick={() => setTool('hand')}><Hand size={16} /></button>
+          </div>
+          <div className={`tool ${tool === 'pen' ? 'on' : ''}`}>
+            <button title="Pen (P) — draw a Path2D: click for corners, drag for curves, click the first point to close, Enter to finish" onClick={() => setTool('pen')}><PenTool size={16} /></button>
           </div>
           <div className="tool">
             <button title="Pick colour (C) — from anywhere on the screen, e.g. a reference image. Applies to the selected element." onClick={() => pickColorForSelection()}><Pipette size={16} /></button>

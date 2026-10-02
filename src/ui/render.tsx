@@ -1,12 +1,13 @@
 import { memo, useEffect, useState, type CSSProperties, type ReactNode } from 'react';
-import { Backpack, Box, Ellipsis, Image as ImageIcon, MessageCircle, Users } from 'lucide-react';
+import { Backpack, Box, Ellipsis, Image as ImageIcon, MessageCircle, Users, Clapperboard } from 'lucide-react';
 import { findChild, resolve, type LayoutResult } from '../model/layout';
 import { baselineShift, fitTextSize, fontFamily, fontStyle, lineFactor, stripRichText } from '../model/fonts';
 import { isGuiObject, isImage, isText, isWorldGui } from '../model/schema';
 import type { UIEvent } from '../model/runtime';
-import type { ColorKey, FontValue, GuiNode, NumberKey, PreviewUser, UDim2, Vec2 } from '../model/types';
-import { assetThumb, avatarThumb, subscribeThumbs } from './thumbs';
+import type { ColorKey, FontValue, GuiNode, NumberKey, PreviewUser, UDim2, Vec2, UDim, Device } from '../model/types';
+import { imageSize, assetThumb, avatarThumb, subscribeThumbs } from './thumbs';
 import { applyTextColors } from '../model/richColors';
+import { pathData } from '../model/path';
 
 export interface RenderCtx {
   nodes: Record<string, GuiNode>;
@@ -76,21 +77,42 @@ function sampleNumber(keys: NumberKey[], t: number): number {
   return s[s.length - 1].v;
 }
 
-/** CSS linear-gradient emulating a UIGradient applied on top of a base colour/transparency */
+/**
+ * CSS gradient emulating a UIGradient applied on top of a base colour/transparency.
+ * Type: Linear / Radial (circle) / Elliptical / Conical; Scale shrinks or stretches it about its centre;
+ * TileMode repeats (or mirrors) it beyond its ends.
+ */
 export function gradientCss(g: GuiNode, baseColor: string, baseAlpha: number): string {
   const colors: ColorKey[] = g.props.Color;
   const trans: NumberKey[] = g.props.Transparency;
   const rot: number = g.props.Rotation ?? 0;
   const off: Vec2 = g.props.Offset ?? { x: 0, y: 0 };
+  const type: string = g.props.Type ?? 'Linear';
+  const scale: number = Math.max(0.01, g.props.Scale ?? 1);
+  const tile: string = g.props.TileMode ?? 'Clamp';
   const rad = (rot * Math.PI) / 180;
-  const shift = off.x * Math.cos(rad) + off.y * Math.sin(rad);
   const ts = [...new Set([...colors.map((k) => k.t), ...trans.map((k) => k.t)])].sort((a, b) => a - b);
-  const stops = ts.map((t) => {
+  const colorAt = (t: number) => {
     const [r, gg, b] = mul(baseColor, sampleColor(colors, t));
     const a = baseAlpha * (1 - sampleNumber(trans, t));
-    return `rgba(${r.toFixed(0)},${gg.toFixed(0)},${b.toFixed(0)},${a.toFixed(3)}) ${((t + shift) * 100).toFixed(2)}%`;
-  });
-  return `linear-gradient(${rot + 90}deg, ${stops.join(', ')})`;
+    return `rgba(${r.toFixed(0)},${gg.toFixed(0)},${b.toFixed(0)},${a.toFixed(3)})`;
+  };
+  // position of t along the gradient, in % (linear: of the box along the rotation; radial: of the radius; conical: of the turn)
+  const linear = type === 'Linear';
+  const shift = linear ? off.x * Math.cos(rad) + off.y * Math.sin(rad) : 0;
+  const pos = (t: number) => (linear ? 0.5 + (t - 0.5) * scale + shift : t * scale) * 100;
+  let stops = ts.map((t) => `${colorAt(t)} ${pos(t).toFixed(2)}%`);
+  if (tile === 'Mirror') {
+    // the gradient then the same backwards, repeated
+    const len = pos(1) - pos(0);
+    stops = [...stops, ...[...ts].reverse().map((t) => `${colorAt(t)} ${(pos(0) + 2 * len - (pos(t) - pos(0))).toFixed(2)}%`)];
+  }
+  const rep = tile === 'Clamp' ? '' : 'repeating-';
+  const at = `${(50 + off.x * 100).toFixed(2)}% ${(50 + off.y * 100).toFixed(2)}%`;
+  if (type === 'Radial') return `${rep}radial-gradient(circle closest-side at ${at}, ${stops.join(', ')})`;
+  if (type === 'Elliptical') return `${rep}radial-gradient(ellipse closest-side at ${at}, ${stops.join(', ')})`;
+  if (type === 'Conical') return `${rep}conic-gradient(from ${rot + 90}deg at ${at}, ${stops.join(', ')})`;
+  return `${rep}linear-gradient(${rot + 90}deg, ${stops.join(', ')})`;
 }
 
 // ---------------------------------------------------------------------------
@@ -196,7 +218,9 @@ export const NodeView = memo(function NodeView({ id, origin, ctx }: NodeProps) {
   const textual = isText(n.className);
   const borderStrokes = strokes.filter((s) => s.props.ApplyStrokeMode === 'Border' || !textual);
   const textStroke = textual ? strokes.find((s) => s.props.ApplyStrokeMode !== 'Border') : undefined;
-  const radius = cornerMod ? Math.max(0, Math.min(resolve(cornerMod.props.CornerRadius, Math.min(w, h)), Math.min(w, h) / 2)) : 0;
+  const corners = cornerRadii(cornerMod, w, h);
+  const radius: number | string = corners.every((c) => c === corners[0]) ? corners[0] : corners.map((c) => `${c}px`).join(' ');
+  const shadows = n.children.map((c) => ctx.nodes[c]).filter((c): c is GuiNode => c?.className === 'UIShadow' && c.props.Enabled !== false);
 
   const outer: CSSProperties = {
     position: 'absolute',
@@ -207,7 +231,9 @@ export const NodeView = memo(function NodeView({ id, origin, ctx }: NodeProps) {
     zIndex: p.ZIndex,
     transform: p.Rotation ? `rotate(${p.Rotation}deg)` : undefined,
   };
-  const uiScale = ctx.scales?.[id];
+  const scaleMod = n.children.map((c) => ctx.nodes[c]).find((c) => c?.className === 'UIScale');
+  const effectScale = ctx.scales?.[id];
+  const uiScale = scaleMod || effectScale !== undefined ? (scaleMod?.props.Scale ?? 1) * (effectScale ?? 1) : undefined;
   if (uiScale !== undefined) {
     // UIScale scales about the AnchorPoint; Rotation still turns about the centre
     const a: Vec2 = p.AnchorPoint;
@@ -225,23 +251,90 @@ export const NodeView = memo(function NodeView({ id, origin, ctx }: NodeProps) {
     if (grad) bg.backgroundImage = gradientCss(grad, p.BackgroundColor3, bgAlpha);
     else bg.backgroundColor = rgba(p.BackgroundColor3, bgAlpha);
   }
-  const shadows: string[] = [];
+  // strokes: the plain kind (outside, no offset, fixed thickness) as stacked box-shadows; the rest as their own rings
+  const ringed = borderStrokes.filter((s) => (s.props.BorderStrokePosition ?? 'Outer') !== 'Outer' || resolveU(s.props.BorderOffset) !== 0 || s.props.StrokeSizingMode === 'ScaledSize');
+  const plain = borderStrokes.filter((s) => !ringed.includes(s));
+  const boxShadows: string[] = [];
   let spread = 0;
-  for (const s of borderStrokes) {
+  for (const s of plain) {
     spread += s.props.Thickness;
-    shadows.push(`0 0 0 ${spread}px ${rgba(s.props.Color, 1 - s.props.Transparency)}`);
+    boxShadows.push(`0 0 0 ${spread}px ${rgba(s.props.Color, 1 - s.props.Transparency)}`);
   }
-  if (!cornerMod && p.BorderSizePixel > 0 && bgAlpha > 0) shadows.push(`0 0 0 ${spread + p.BorderSizePixel}px ${rgba(p.BorderColor3, bgAlpha)}`);
-  if (shadows.length) bg.boxShadow = shadows.join(', ');
+  if (!cornerMod && p.BorderSizePixel > 0 && bgAlpha > 0) {
+    // BorderMode: outside the box (Outline), half in / half out (Middle) or inside it (Inset)
+    const b = p.BorderSizePixel;
+    const c = rgba(p.BorderColor3, bgAlpha);
+    if (p.BorderMode === 'Inset') boxShadows.push(`inset 0 0 0 ${b}px ${c}`);
+    else if (p.BorderMode === 'Middle') boxShadows.push(`0 0 0 ${spread + b / 2}px ${c}`, `inset 0 0 0 ${b / 2}px ${c}`);
+    else boxShadows.push(`0 0 0 ${spread + b}px ${c}`);
+  }
+  if (boxShadows.length) bg.boxShadow = boxShadows.join(', ');
+  const rings = ringed.map((s) => {
+    const t = s.props.StrokeSizingMode === 'ScaledSize' ? s.props.Thickness * Math.min(w, h) : s.props.Thickness;
+    const pos = s.props.BorderStrokePosition ?? 'Outer';
+    const out = resolve(s.props.BorderOffset ?? { s: 0, o: 0 }, Math.min(w, h)) + (pos === 'Outer' ? t : pos === 'Center' ? t / 2 : 0);
+    return (
+      <div
+        key={s.id}
+        className="rb-stroke"
+        style={{
+          position: 'absolute', inset: -out, border: `${t}px solid ${rgba(s.props.Color, 1 - s.props.Transparency)}`, pointerEvents: 'none',
+          borderRadius: corners.map((c) => `${c > 0 ? Math.max(0, c + out) : 0}px`).join(' '), zIndex: (s.props.ZIndex ?? 1) < 0 ? -1 : undefined,
+        }}
+      />
+    );
+  });
+
+  // UIShadow: a blurred copy of the shape behind it (or inside it when Inset); Text mode shadows the letters
+  const textShadows = textual ? shadows.filter((s) => s.props.Mode === 'Text') : [];
+  const shapeShadows = shadows.filter((s) => !textShadows.includes(s));
+  const shadowOf = (s: GuiNode) => {
+    const sp = s.props;
+    const ox = resolve(sp.Offset.x, w);
+    const oy = resolve(sp.Offset.y, h);
+    const sx = resolve(sp.Spread.x, w);
+    const sy = resolve(sp.Spread.y, h);
+    const blur = Math.max(0, resolve(sp.BlurRadius, Math.min(w, h)));
+    const color = rgba(sp.Color, 1 - (sp.Transparency ?? 0));
+    if (sp.Inset) {
+      return (
+        <div key={s.id} className="rb-shadow" style={{ position: 'absolute', inset: 0, borderRadius: radius, overflow: 'hidden', pointerEvents: 'none', boxShadow: `inset ${ox}px ${oy}px ${blur}px ${Math.max(sx, sy)}px ${color}` }} />
+      );
+    }
+    const grow = (sx + sy) / 2;
+    return (
+      <div
+        key={s.id}
+        className="rb-shadow"
+        style={{
+          position: 'absolute', left: ox - sx, top: oy - sy, width: w + 2 * sx, height: h + 2 * sy, pointerEvents: 'none', background: color,
+          borderRadius: corners.map((c) => `${c > 0 ? Math.max(0, c + grow) : 0}px`).join(' '), filter: blur > 0 ? `blur(${(blur / 2).toFixed(2)}px)` : undefined,
+        }}
+      />
+    );
+  };
+  const shadowsBehind = shapeShadows.filter((s) => !s.props.Inset && (s.props.ZIndex ?? -1) < 0).map(shadowOf);
+  const shadowsAbove = shapeShadows.filter((s) => s.props.Inset || (s.props.ZIndex ?? -1) >= 0).map(shadowOf);
+  const textShadowCss = textShadows.length
+    ? textShadows.map((s) => `${resolve(s.props.Offset.x, w)}px ${resolve(s.props.Offset.y, h)}px ${Math.max(0, resolve(s.props.BlurRadius, Math.min(w, h)))}px ${rgba(s.props.Color, 1 - (s.props.Transparency ?? 0))}`).join(', ')
+    : undefined;
 
   const children = n.children.filter((c) => ctx.nodes[c] && isGuiObject(ctx.nodes[c].className));
+  const paths = n.children.filter((c) => ctx.nodes[c]?.className === 'Path2D');
   const scrolling = n.className === 'ScrollingFrame';
   const clip = p.ClipsDescendants || scrolling || n.className === 'CanvasGroup';
   const content = ctx.layout.content[id] ?? r;
 
   let layer: ReactNode = null;
-  if (textual) layer = <TextLayer n={n} ctx={ctx} box={{ x: content.x - r.x, y: content.y - r.y, w: content.w, h: content.h }} el={{ w, h }} grad={grad} stroke={textStroke} />;
+  if (textual) layer = <TextLayer n={n} ctx={ctx} box={{ x: content.x - r.x, y: content.y - r.y, w: content.w, h: content.h }} el={{ w, h }} grad={grad} stroke={textStroke} textShadow={textShadowCss} />;
   else if (isImage(n.className)) layer = <ImageLayer n={n} ctx={ctx} w={w} h={h} radius={radius} />;
+  else if (n.className === 'VideoFrame')
+    layer = (
+      <div className="rb-placeholder" style={{ borderRadius: radius }}>
+        <Clapperboard size={Math.min(48, Math.max(12, Math.min(w, h) * 0.3))} strokeWidth={1.25} />
+        {p.Video && Math.min(w, h) > 60 && <span className="rb-placeholder-id">{String(p.Video).replace('rbxassetid://', '#')}</span>}
+      </div>
+    );
   else if (n.className === 'ViewportFrame')
     layer = (
       <div className="rb-placeholder" style={{ borderRadius: radius }}>
@@ -250,9 +343,12 @@ export const NodeView = memo(function NodeView({ id, origin, ctx }: NodeProps) {
     );
 
   const canvas = scrolling ? ctx.layout.canvas[id] : undefined;
-  const autoBtn = ctx.interactive && (n.className === 'TextButton' || n.className === 'ImageButton') && p.AutoButtonColor !== false;
+  const autoBtn = ctx.interactive && (n.className === 'TextButton' || n.className === 'ImageButton') && p.AutoButtonColor !== false && p.Interactable !== false;
 
-  const ev = ctx.onEvent && ctx.eventIds?.has(id) ? ctx.onEvent : null;
+  // Interactable = false: no input for it or anything inside it
+  const blocked = ctx.interactive && p.Interactable === false;
+  if (blocked) outer.pointerEvents = 'none';
+  const ev = ctx.onEvent && ctx.eventIds?.has(id) && !blocked ? ctx.onEvent : null;
   const handlers = ev
     ? {
         onPointerEnter: () => ev(id, 'enter'),
@@ -260,14 +356,18 @@ export const NodeView = memo(function NodeView({ id, origin, ctx }: NodeProps) {
         onPointerDown: () => ev(id, 'down'),
         onPointerUp: () => ev(id, 'up'),
         onClick: () => ev(id, 'click'),
+        onWheel: (e: React.WheelEvent) => ev(id, e.deltaY > 0 ? 'wheelDown' : 'wheelUp'),
       }
     : {};
 
   return (
     <div data-nid={id} className={autoBtn || ev ? 'rb-node rb-autobtn' : 'rb-node'} style={outer} {...handlers}>
+      {shadowsBehind}
       <div className="rb-bg" style={bg} />
+      {rings}
+      {shadowsAbove}
       {layer}
-      {children.length > 0 && (
+      {(children.length > 0 || paths.length > 0) && (
         <div
           className={scrolling && ctx.interactive ? 'rb-children rb-scroll' : 'rb-children'}
           style={{
@@ -281,6 +381,7 @@ export const NodeView = memo(function NodeView({ id, origin, ctx }: NodeProps) {
         >
           {canvas && ctx.interactive && <div style={{ position: 'absolute', left: canvas.x - r.x + canvas.w, top: canvas.y - r.y + canvas.h, width: 1, height: 1 }} />}
           {children.map((c) => <NodeView key={c} id={c} origin={{ x: r.x, y: r.y }} ctx={ctx} />)}
+          {paths.map((c) => <PathView key={c} id={c} box={r} ctx={ctx} />)}
         </div>
       )}
       {scrolling && !ctx.interactive && canvas && <FakeScrollbar n={n} w={w} h={h} canvas={canvas} origin={r} />}
@@ -296,7 +397,8 @@ function FakeScrollbar({ n, w, h, canvas, origin }: { n: GuiNode; w: number; h: 
   if (canvas.h > h + 0.5 && n.props.ScrollingDirection !== 'X') {
     const th = (h * h) / canvas.h;
     const top = ((origin.y - canvas.y) / (canvas.h - h)) * (h - th);
-    bars.push(<div key="v" style={{ position: 'absolute', right: 0, top, width: t, height: th, background: color, pointerEvents: 'none', zIndex: 100000 }} />);
+    const side = n.props.VerticalScrollBarPosition === 'Left' ? { left: 0 } : { right: 0 };
+    bars.push(<div key="v" style={{ position: 'absolute', ...side, top, width: t, height: th, background: color, pointerEvents: 'none', zIndex: 100000 }} />);
   }
   if (canvas.w > w + 0.5 && n.props.ScrollingDirection !== 'Y') {
     const tw = (w * w) / canvas.w;
@@ -306,7 +408,7 @@ function FakeScrollbar({ n, w, h, canvas, origin }: { n: GuiNode; w: number; h: 
   return <>{bars}</>;
 }
 
-function TextLayer({ n, ctx, box, el, grad, stroke }: { n: GuiNode; ctx: RenderCtx; box: { x: number; y: number; w: number; h: number }; el: { w: number; h: number }; grad?: GuiNode; stroke?: GuiNode }) {
+function TextLayer({ n, ctx, box, el, grad, stroke, textShadow }: { n: GuiNode; ctx: RenderCtx; box: { x: number; y: number; w: number; h: number }; el: { w: number; h: number }; grad?: GuiNode; stroke?: GuiNode; textShadow?: string }) {
   const p = n.props;
   const font: FontValue = p.FontFace;
   const isBox = n.className === 'TextBox';
@@ -338,6 +440,7 @@ function TextLayer({ n, ctx, box, el, grad, stroke }: { n: GuiNode; ctx: RenderC
   };
   const textStyle: CSSProperties = {
     ...fontStyle(font, size), lineHeight: lh * lineFactor(font), whiteSpace: p.TextWrapped ? 'pre-wrap' : 'pre',
+    direction: p.TextDirection === 'RightToLeft' ? 'rtl' : p.TextDirection === 'LeftToRight' ? 'ltr' : undefined,
     textAlign: xa === 'Left' ? 'left' : xa === 'Right' ? 'right' : 'center',
     overflowWrap: p.TextWrapped ? 'break-word' : undefined, maxWidth: p.TextWrapped ? '100%' : undefined,
   };
@@ -376,19 +479,28 @@ function TextLayer({ n, ctx, box, el, grad, stroke }: { n: GuiNode; ctx: RenderC
     return <PreviewTextBox n={n} style={{ ...textStyle, ...fill, color: rgba(p.TextColor3, alpha) }} box={box} />;
   }
 
-  const html = (p.RichText || multiColor) && !showPlaceholder ? { __html: richTextHtml(raw) } : null;
-  const inner = { position: 'relative' as const, maxWidth: p.TextWrapped ? '100%' : undefined };
+  // MaxVisibleGraphemes hides the letters past N but keeps the layout (typewriter text)
+  const maxG = Math.floor(p.MaxVisibleGraphemes ?? -1);
+  const rich = (p.RichText || multiColor) && !showPlaceholder;
+  const html = rich || maxG >= 0 ? { __html: maxG >= 0 ? limitGraphemes(rich ? richTextHtml(raw) : escapeText(raw), maxG) : richTextHtml(raw) } : null;
+  // TextTruncate: "…" where it doesn't fit (one line, or the lines that fit when wrapped)
+  const truncate = p.TextTruncate && p.TextTruncate !== 'None' && !p.TextScaled;
+  const lineH = size * lh * lineFactor(font);
+  const inner: CSSProperties = { position: 'relative', maxWidth: p.TextWrapped || truncate ? '100%' : undefined };
+  if (truncate && !p.TextWrapped) Object.assign(inner, { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'pre' });
+  if (truncate && p.TextWrapped) Object.assign(inner, { display: '-webkit-box', WebkitBoxOrient: 'vertical', WebkitLineClamp: Math.max(1, Math.floor((box.h + 0.5) / lineH)), overflow: 'hidden' });
   return (
     <>
       <div style={wrap}>
         <div style={inner}>
+          {textShadow && (html ? <span style={{ ...textStyle, position: 'absolute', inset: 0, color: 'transparent', textShadow }} dangerouslySetInnerHTML={html} /> : <span style={{ ...textStyle, position: 'absolute', inset: 0, color: 'transparent', textShadow }}>{raw}</span>)}
           {strokeStyle && (html ? <span style={strokeStyle} dangerouslySetInnerHTML={html} /> : <span style={strokeStyle}>{raw}</span>)}
           {html ? <span style={fill} dangerouslySetInnerHTML={html} /> : <span style={fill}>{raw}</span>}
         </div>
       </div>
       {gradLayer && (
         <div className="rb-grad-overlay" style={gradLayer}>
-          <div style={{ maxWidth: inner.maxWidth }}>
+          <div style={inner}>
             {html ? <span style={textStyle} dangerouslySetInnerHTML={html} /> : <span style={textStyle}>{raw}</span>}
           </div>
         </div>
@@ -416,7 +528,7 @@ function PreviewTextBox({ n, style, box }: { n: GuiNode; style: CSSProperties; b
   return p.MultiLine ? <textarea {...common} /> : <input {...common} />;
 }
 
-function ImageLayer({ n, ctx, w, h, radius }: { n: GuiNode; ctx: RenderCtx; w: number; h: number; radius: number }) {
+function ImageLayer({ n, ctx, w, h, radius }: { n: GuiNode; ctx: RenderCtx; w: number; h: number; radius: number | string }) {
   const p = n.props;
   const src = n.preview?.src || (n.avatar ? avatarThumb(ctx.previewUser?.id ?? 1, n.avatar.kind) : assetThumb(p.Image));
   if (!src) {
@@ -431,7 +543,13 @@ function ImageLayer({ n, ctx, w, h, radius }: { n: GuiNode; ctx: RenderCtx; w: n
   const st: CSSProperties = {
     position: 'absolute', inset: 0, borderRadius: radius, pointerEvents: 'none', opacity: 1 - (p.ImageTransparency ?? 0),
     backgroundImage: `url("${src}")`, backgroundRepeat: 'no-repeat', backgroundPosition: 'center',
+    imageRendering: p.ResampleMode === 'Pixelated' ? 'pixelated' : undefined,
   };
+  // ImageRectOffset / ImageRectSize: show one part of the image (sprite sheets)
+  const rs: Vec2 = p.ImageRectSize ?? { x: 0, y: 0 };
+  const ro: Vec2 = p.ImageRectOffset ?? { x: 0, y: 0 };
+  const natural = rs.x > 0 && rs.y > 0 ? (n.preview ? { w: n.preview.w, h: n.preview.h } : imageSize(src)) : undefined;
+  const sprite = natural && p.ScaleType !== 'Tile' && p.ScaleType !== 'Slice';
   const mask: CSSProperties = {};
   switch (p.ScaleType) {
     case 'Fit':
@@ -466,11 +584,26 @@ function ImageLayer({ n, ctx, w, h, radius }: { n: GuiNode; ctx: RenderCtx; w: n
     default:
       st.backgroundSize = '100% 100%';
   }
+  if (sprite && natural) {
+    const kx = w / rs.x;
+    const ky = h / rs.y;
+    st.backgroundSize = `${natural.w * kx}px ${natural.h * ky}px`;
+    st.backgroundPosition = `${-ro.x * kx}px ${-ro.y * ky}px`;
+  }
   for (const k of ['backgroundSize', 'backgroundRepeat', 'backgroundPosition'] as const) (mask as any)['mask' + k.slice(10)] = st[k];
   const tint = (p.ImageColor3 ?? '#ffffff').toLowerCase() !== '#ffffff';
+  // ImageButton: HoverImage / PressedImage replace the image while hovered / held (Preview)
+  const alt = (content: string | undefined, cls: string) => {
+    const s2 = ctx.interactive && content ? assetThumb(content) : undefined;
+    return s2 ? <div className={cls} style={{ ...st, backgroundImage: `url("${s2}")` }} /> : null;
+  };
+  const hover = n.className === 'ImageButton' ? alt(p.HoverImage, 'rb-img-hover') : null;
+  const pressed = n.className === 'ImageButton' ? alt(p.PressedImage, 'rb-img-pressed') : null;
   return (
     <>
-      <div style={st} />
+      <div className={`rb-img-base${hover ? ' has-hover' : ''}${pressed ? ' has-pressed' : ''}`} style={st} />
+      {hover}
+      {pressed}
       {tint && st.backgroundImage && (
         <div style={{ ...st, backgroundImage: 'none', backgroundColor: p.ImageColor3, mixBlendMode: 'multiply', maskImage: `url("${src}")`, WebkitMaskImage: `url("${src}")`, ...mask }} />
       )}
@@ -487,6 +620,23 @@ export function ScreenView({ id, ctx }: { id: string; ctx: RenderCtx }) {
   if (n.props.Enabled === false && !world) return null;
   const kids = n.children.filter((c) => ctx.nodes[c] && isGuiObject(ctx.nodes[c].className));
   const clip = n.className === 'SurfaceGui' || (world && n.props.ClipsDescendants);
+  const safe = ctx.layout.clips?.[id];
+  if (safe) {
+    // ClipToDeviceSafeArea: content is cut off at the notch / home bar (stretched fullscreen backgrounds aren't)
+    const free = kids.filter((c) => ctx.layout.unclipped?.has(c));
+    const inside = kids.filter((c) => !ctx.layout.unclipped?.has(c));
+    return (
+      <div data-nid={id} className="rb-screen" style={{ position: 'absolute', left: r.x, top: r.y, width: r.w, height: r.h, zIndex: n.props.DisplayOrder ?? 0 }}>
+        {free.map((c) => <NodeView key={c} id={c} origin={{ x: r.x, y: r.y }} ctx={ctx} />)}
+        <div style={{ position: 'absolute', left: safe.x - r.x, top: safe.y - r.y, width: safe.w, height: safe.h, overflow: 'hidden', pointerEvents: 'none' }}>
+          <div style={{ position: 'absolute', left: r.x - safe.x, top: r.y - safe.y, pointerEvents: 'auto' }}>
+            {inside.map((c) => <NodeView key={c} id={c} origin={{ x: r.x, y: r.y }} ctx={ctx} />)}
+          </div>
+        </div>
+        {n.children.filter((c) => ctx.nodes[c]?.className === 'Path2D').map((c) => <PathView key={c} id={c} box={r} ctx={ctx} />)}
+      </div>
+    );
+  }
   return (
     <div
       data-nid={id}
@@ -497,14 +647,52 @@ export function ScreenView({ id, ctx }: { id: string; ctx: RenderCtx }) {
       }}
     >
       {kids.map((c) => <NodeView key={c} id={c} origin={{ x: r.x, y: r.y }} ctx={ctx} />)}
+      {n.children.filter((c) => ctx.nodes[c]?.className === 'Path2D').map((c) => <PathView key={c} id={c} box={r} ctx={ctx} />)}
     </div>
   );
 }
 
-/** Mock of Roblox's in-game top bar (the 58px GUI inset): menu + chat on the left, players + more on the right */
-export function TopbarMock({ title }: { title?: string }) {
+/** A Path2D, drawn as SVG over its parent's box (the stroke is clickable in the editor) */
+function PathView({ id, box, ctx }: { id: string; box: { x: number; y: number; w: number; h: number }; ctx: RenderCtx }) {
+  const n = ctx.nodes[id];
+  if (!n || n.props.Visible === false || !n.points?.length) return null;
+  const p = n.props;
+  const d = pathData(n.points, { x: 0, y: 0, w: box.w, h: box.h }, !!p.Closed);
+  const stroke = rgba(p.Color3, 1 - (p.Transparency ?? 0));
   return (
-    <div className="topbar-mock" title={title}>
+    <svg className="rb-path" width={box.w} height={box.h} style={{ position: 'absolute', left: 0, top: 0, overflow: 'visible', pointerEvents: 'none', zIndex: p.ZIndex }}>
+      <path d={d} fill="none" stroke={stroke} strokeWidth={Math.max(0, p.Thickness ?? 1)} strokeLinecap="round" strokeLinejoin="round" />
+      {!ctx.interactive && <path data-nid={id} d={d} fill="none" stroke="transparent" strokeWidth={Math.max(10, (p.Thickness ?? 1) + 8)} style={{ pointerEvents: 'stroke' }} />}
+    </svg>
+  );
+}
+
+/** Mock of Roblox's in-game top bar (the 58px GUI inset): menu + chat on the left, players + more on the right */
+/** The device's camera notch and home bar (phones), drawn over the screen */
+export function DeviceCutouts({ device }: { device: Device }) {
+  const s = device.safe;
+  if (!s) return null;
+  const landscape = device.w > device.h;
+  return (
+    <div className="device-cutouts" title="Device safe area: the notch and home bar (ScreenInsets / ClipToDeviceSafeArea)">
+      {s.l > 0 && <div className="cutout-zone" style={{ left: 0, top: 0, width: s.l, bottom: 0 }} />}
+      {s.r > 0 && <div className="cutout-zone" style={{ right: 0, top: 0, width: s.r, bottom: 0 }} />}
+      {s.t > 0 && <div className="cutout-zone" style={{ left: 0, top: 0, right: 0, height: s.t }} />}
+      {s.b > 0 && <div className="cutout-zone" style={{ left: 0, bottom: 0, right: 0, height: s.b }} />}
+      {landscape ? (
+        <div className="cutout-notch" style={{ left: 0, top: device.h / 2 - 80, width: 30, height: 160, borderRadius: '0 18px 18px 0' }} />
+      ) : (
+        <div className="cutout-notch" style={{ top: 0, left: device.w / 2 - 80, width: 160, height: 30, borderRadius: '0 0 18px 18px' }} />
+      )}
+      {s.b > 0 && <div className="cutout-homebar" style={{ left: device.w / 2 - 67, bottom: 8, width: 134 }} />}
+    </div>
+  );
+}
+
+export function TopbarMock({ title, device }: { title?: string; device?: Device }) {
+  const s = device?.safe;
+  return (
+    <div className="topbar-mock" title={title} style={s ? { left: s.l, top: s.t, right: s.r } : undefined}>
       <div className="tb-pill">
         <span className="tb-icon" title="Roblox menu">
           <svg viewBox="0 0 24 24" width="24" height="24">
@@ -524,4 +712,50 @@ export function TopbarMock({ title }: { title?: string }) {
       </div>
     </div>
   );
+}
+
+/** UICorner radii in px [top-left, top-right, bottom-right, bottom-left]; per-corner radii override CornerRadius */
+export function cornerRadii(corner: GuiNode | undefined, w: number, h: number): [number, number, number, number] {
+  if (!corner) return [0, 0, 0, 0];
+  const m = Math.min(w, h);
+  const r = (u?: UDim) => (u ? Math.max(0, Math.min(resolve(u, m), m / 2)) : undefined);
+  const all = r(corner.props.CornerRadius) ?? 0;
+  const p = corner.props;
+  return [r(p.TopLeftRadius) ?? all, r(p.TopRightRadius) ?? all, r(p.BottomRightRadius) ?? all, r(p.BottomLeftRadius) ?? all];
+}
+
+const resolveU = (u?: UDim) => (u ? u.s + u.o : 0);
+
+const escapeText = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+/** Keep the first n letters (graphemes) of some HTML visible; the rest stay laid out but hidden */
+function limitGraphemes(html: string, n: number): string {
+  const tpl = document.createElement('template');
+  tpl.innerHTML = html;
+  const seg = typeof Intl !== 'undefined' && 'Segmenter' in Intl ? new (Intl as any).Segmenter(undefined, { granularity: 'grapheme' }) : null;
+  const split = (t: string): string[] => (seg ? Array.from(seg.segment(t), (x: any) => x.segment as string) : Array.from(t));
+  let left = n;
+  const walk = (node: Node) => {
+    for (const child of Array.from(node.childNodes)) {
+      if (child.nodeType === Node.TEXT_NODE) {
+        const parts = split(child.textContent ?? '');
+        if (left >= parts.length) {
+          left -= parts.length;
+          continue;
+        }
+        // split this text node where the visible letters run out
+        const i = left;
+        left = 0;
+        const hidden = document.createElement('span');
+        hidden.style.visibility = 'hidden';
+        hidden.textContent = parts.slice(i).join('');
+        child.textContent = parts.slice(0, i).join('');
+        child.parentNode!.insertBefore(hidden, child.nextSibling);
+      } else if (left <= 0 && child.nodeType === Node.ELEMENT_NODE) {
+        (child as HTMLElement).style.visibility = 'hidden';
+      } else walk(child);
+    }
+  };
+  walk(tpl.content);
+  return tpl.innerHTML;
 }

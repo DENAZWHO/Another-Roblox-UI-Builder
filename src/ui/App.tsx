@@ -1,14 +1,16 @@
 import { useEffect } from 'react';
 import { useStore, type Tool } from '../store';
 import { Toolbar } from './Toolbar';
-import { LeftPanel, insertDropped, isInsertDrag } from './LayersPanel';
+import { LeftPanel, MODIFIER_DRAG_TYPE, addDroppedModifier, insertDropped, isInsertDrag } from './LayersPanel';
+import type { ModifierClass } from '../model/types';
 import { Canvas } from './Canvas';
 import { PropertiesPanel } from './PropertiesPanel';
 import { Timeline } from './Timeline';
 import { ContextMenu, Dialogs, Toast } from './Dialogs';
-import { DragPreview, canvasDropParent } from './DragPreview';
+import { DragPreview, canvasDropParent, canvasModifierTarget } from './DragPreview';
 import { pickColorForSelection } from './QuickBar';
 import { isEyedropping } from './eyedropper';
+import { pathKeyDown } from './PathTool';
 import { zoomAt, zoomToFit, zoomToSelection } from './viewport';
 import {
   copySelection, savePrefabFromSelection, cutSelection, deleteSelection, duplicateSelection, groupSelection, nudge, pasteClipboard,
@@ -20,7 +22,7 @@ import { isGuiObject, isRoot } from '../model/schema';
 import { clipLength } from '../model/animation';
 
 const TOOL_KEYS: Record<string, Tool> = {
-  v: 'move', h: 'hand', f: 'Frame', r: 'Frame', s: 'ScrollingFrame', g: 'CanvasGroup', t: 'TextLabel',
+  v: 'move', h: 'hand', p: 'pen', f: 'Frame', r: 'Frame', s: 'ScrollingFrame', g: 'CanvasGroup', t: 'TextLabel',
   b: 'TextButton', x: 'TextBox', i: 'ImageLabel', u: 'ImageButton',
 };
 
@@ -35,6 +37,9 @@ function onKeyDown(e: KeyboardEvent) {
   const mod = e.ctrlKey || e.metaKey;
   const k = e.key.toLowerCase();
   const done = () => e.preventDefault();
+
+  // the Pen tool and a selected Path2D's points
+  if (!mod && pathKeyDown(e)) return;
 
   // a selected reference image
   const ref = getReference(s.refSelection);
@@ -151,6 +156,8 @@ export function App() {
     }
     if (!isInsertDrag(e)) return;
     e.preventDefault();
+    const mod = e.dataTransfer.getData(MODIFIER_DRAG_TYPE) as ModifierClass;
+    if (mod) return addDroppedModifier(mod, canvasModifierTarget(e.clientX, e.clientY, mod));
     insertDropped(e.dataTransfer, canvasDropParent(e.clientX, e.clientY), { x: wx, y: wy });
   };
 

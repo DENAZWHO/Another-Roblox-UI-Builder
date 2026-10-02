@@ -2,6 +2,7 @@ import { useStore } from '../store';
 import { layoutNow } from '../actions';
 import { unionRect } from '../model/doc';
 import type { Rect } from '../model/types';
+import { screenBox, screensOf } from '../model/screens';
 
 export const viewport = { w: 1200, h: 800 };
 
@@ -22,11 +23,18 @@ export function zoomToRect(r: Rect, padding = 60, maxZoom = 1) {
   useStore.setState({ zoom: nz, pan: { x: viewport.w / 2 - (r.x + r.w / 2) * nz, y: viewport.h / 2 - (r.y + r.h / 2) * nz } });
 }
 
-/** Fit the device screen plus every BillboardGui / SurfaceGui artboard */
+/** Fit every screen plus every BillboardGui / SurfaceGui artboard */
 export function zoomToFit() {
-  const { device } = useStore.getState().doc;
+  const { doc } = useStore.getState();
   const boards = Object.values(layoutNow().artboards);
-  zoomToRect(unionRect([{ x: 0, y: 0, w: device.w, h: device.h }, ...boards.map((r) => ({ ...r, y: r.y - 30 }))]), 48, 2);
+  const screens = screensOf(doc).map((s) => screenBox(doc, s.id));
+  zoomToRect(unionRect([...screens, ...boards].map((r) => ({ ...r, y: r.y - 30, h: r.h + 30 }))), 48, 2);
+}
+
+/** Fit one screen's artboard */
+export function zoomToScreen(screenId: string) {
+  const r = screenBox(useStore.getState().doc, screenId);
+  zoomToRect({ ...r, y: r.y - 30, h: r.h + 30 }, 48, 2);
 }
 
 export function zoomToSelection() {

@@ -7,11 +7,13 @@ import { useEffectiveNodes, useFontEpoch } from './hooks';
 import { applyPixelScale, pixelScaleFactor } from '../model/pixelScale';
 import type { GuiNode, Rect } from '../model/types';
 import { insertNode, moveIntoFrame, patchNodes, reorderInStack, stackOrder, placeNodes, setCornerRadius, setProp, setProps } from '../actions';
-import { ScreenView, TopbarMock, type RenderCtx } from './render';
+import { DeviceCutouts, ScreenView, TopbarMock, type RenderCtx } from './render';
 import { RefLayer, RefSelectionBox, dragReference } from './References';
 import { QuickBar } from './QuickBar';
+import { PathEditor, penDown, startPathMove } from './PathTool';
 import { referenceAt, selectReference } from '../references';
 import { viewport, zoomAt, zoomToFit } from './viewport';
+import { rootOrigins, screenBox, screenOfRoot, screenRoots, screenStartsVisible, screensOf } from '../model/screens';
 
 type Handle = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw';
 interface Line { x1: number; y1: number; x2: number; y2: number }
@@ -44,7 +46,7 @@ export function Canvas() {
 
   const animated = useEffectiveNodes();
   const nodes = useMemo(() => applyPixelScale(animated, doc.rootIds, pixelScaleFactor(doc)), [animated, doc]);
-  const layout = useMemo(() => computeLayout(nodes, doc.rootIds, doc.device), [nodes, doc.rootIds, doc.device, epoch]);
+  const layout = useMemo(() => computeLayout(nodes, doc.rootIds, doc.device, rootOrigins(doc)), [nodes, doc, epoch]);
   const ctx: RenderCtx = { nodes, layout, interactive: false, editingTextId, previewUser: doc.previewUser, pixelScale: pixelScaleFactor(doc) };
 
   const ref = useRef<HTMLDivElement>(null);
@@ -254,6 +256,10 @@ export function Canvas() {
 
     const full = hitPath(e.target);
 
+    if (tool === 'pen') {
+      penDown(e, w, full);
+      return;
+    }
     if (tool !== 'move') {
       // drawing a new element: parent is the deepest container under the cursor
       let parentId = full[0] ?? doc.rootIds.find((r) => doc.nodes[r].className === 'ScreenGui') ?? doc.rootIds[0];
@@ -265,6 +271,12 @@ export function Canvas() {
     }
 
     const target = resolveTarget(full, e.ctrlKey || e.metaKey);
+    // a Path2D: select it, and dragging its line moves it
+    if (target && nodes[target]?.className === 'Path2D') {
+      if (!e.shiftKey) s.select([target]);
+      startPathMove(e, target);
+      return;
+    }
     // nothing of the UI here: a reference image can be picked up and moved
     const refHit = !target && !e.shiftKey ? referenceAt(w.x, w.y) : null;
     if (refHit) {
@@ -600,7 +612,7 @@ export function Canvas() {
       }
       const rect = { x: Math.min(g.sx, g.sx + dx), y: Math.min(g.sy, g.sy + dy), w: Math.max(1, Math.abs(dx)), h: Math.max(1, Math.abs(dy)) };
       if (!g.id) g.id = insertNode(g.cls, { parentId: g.parentId, rect: { ...rect, x: Math.round(rect.x), y: Math.round(rect.y), w: Math.round(rect.w), h: Math.round(rect.h) } });
-      else placeNodes([{ id: g.id, rect }], computeLayout(useStore.getState().doc.nodes, doc.rootIds, doc.device));
+      else placeNodes([{ id: g.id, rect }], computeLayout(useStore.getState().doc.nodes, doc.rootIds, doc.device, rootOrigins(useStore.getState().doc)));
     }
   };
 
@@ -630,7 +642,7 @@ export function Canvas() {
       if (!g.id) {
         const w = toWorld(e.clientX, e.clientY);
         const id = insertNode(g.cls, { parentId: g.parentId });
-        const lay = computeLayout(useStore.getState().doc.nodes, doc.rootIds, doc.device);
+        const lay = computeLayout(useStore.getState().doc.nodes, doc.rootIds, doc.device, rootOrigins(useStore.getState().doc));
         const r = lay.rects[id];
         if (r && !lay.laidOut.has(id)) placeNodes([{ id, rect: { ...r, x: Math.round(w.x - r.w / 2), y: Math.round(w.y - r.h / 2) } }], lay);
       }
@@ -687,6 +699,7 @@ export function Canvas() {
   const selScreens = selection.filter((id) => nodes[id]?.className === 'ScreenGui');
   const selWorld = selection.filter((id) => nodes[id] && isWorldGui(nodes[id].className));
   const worldRoots = doc.rootIds.filter((id) => nodes[id] && isWorldGui(nodes[id].className));
+  const screens = screensOf(doc);
   const selModParents = selection.filter((id) => nodes[id] && isModifier(nodes[id].className)).map((id) => nodes[id].parentId!);
   const single = selGui.length === 1 ? selGui[0] : null;
   const unionSel = selGui.length > 1 ? toScreen(unionRect(selGui.map((id) => layout.rects[id]).filter(Boolean))) : null;
@@ -713,19 +726,46 @@ export function Canvas() {
       <div className="world" style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }}>
         {/* references behind the UI: outside the screen here, inside it below (over the artboard's checkerboard) */}
         <RefLayer placement="behind" />
-        <div className="artboard" style={{ width: doc.device.w, height: doc.device.h, overflow: clipArtboard ? 'hidden' : 'visible' }}>
-          <RefLayer placement="behind" />
-          {doc.rootIds.filter((id) => !worldRoots.includes(id)).map((id) => <ScreenView key={id} id={id} ctx={ctx} />)}
-          {doc.showTopbar && <TopbarMock title="Roblox top bar (58px inset). Toggle it in the Document panel." />}
-        </div>
+        {screens.map((sc) => {
+          const b = screenBox(doc, sc.id);
+          return (
+            <div key={sc.id} className="artboard" style={{ position: 'absolute', left: b.x, top: b.y, width: b.w, height: b.h, overflow: clipArtboard ? 'hidden' : 'visible' }}>
+              {/* contents use canvas coordinates */}
+              <div style={{ position: 'absolute', left: -b.x, top: -b.y }}>
+                <RefLayer placement="behind" />
+                {screenRoots(doc, sc.id).map((id) => <ScreenView key={id} id={id} ctx={ctx} />)}
+              </div>
+              {doc.showTopbar && <TopbarMock device={doc.device} title="Roblox top bar (58px inset). Toggle it in the Document panel." />}
+              <DeviceCutouts device={doc.device} />
+            </div>
+          );
+        })}
         {worldRoots.map((id) => <ScreenView key={id} id={id} ctx={ctx} />)}
         <RefLayer placement="over" />
       </div>
 
       <div className="overlay">
-        <div className="artboard-label" style={{ left: pan.x, top: pan.y - 22 }}>
-          {doc.device.name} · {doc.device.w}×{doc.device.h}
-        </div>
+        {screens.map((sc) => {
+          const b = screenBox(doc, sc.id);
+          const roots = screenRoots(doc, sc.id);
+          const on = selection.some((id) => roots.includes(pathTo(nodes, id)[0]));
+          return (
+            <div
+              key={sc.id}
+              className={`artboard-label screen ${on ? 'on' : ''}`}
+              style={{ left: pan.x + b.x * zoom, top: pan.y + b.y * zoom - 22 }}
+              title="Click to select this screen"
+              onPointerDown={(e) => {
+                e.stopPropagation();
+                if (roots[0]) useStore.getState().select([roots[0]]);
+              }}
+            >
+              {screens.length > 1 && <b>{sc.name}</b>}
+              {screens.length > 1 && (screenStartsVisible(doc, sc) ? ' · shown at start' : ' · hidden at start')} {screens.length > 1 ? '· ' : ''}
+              {doc.device.name} · {doc.device.w}×{doc.device.h}
+            </div>
+          );
+        })}
         {worldRoots.map((id) => {
           const r = layout.artboards[id];
           if (!r) return null;
@@ -737,7 +777,7 @@ export function Canvas() {
           );
         })}
         {selWorld.map((id) => layout.artboards[id] && <div key={'w' + id} className="sel-box screen" style={toRectStyle(toScreen(layout.artboards[id]))} />)}
-        {selScreens.length > 0 && <div className="sel-box screen" style={{ left: pan.x, top: pan.y, width: doc.device.w * zoom, height: doc.device.h * zoom }} />}
+        {selScreens.map((id) => <div key={'s' + id} className="sel-box screen" style={toRectStyle(toScreen(screenBox(doc, screenOfRoot(doc, id).id)))} />)}
         {selModParents.map((id) => boxStyle(id) && <div key={'m' + id} className="sel-box modparent" style={boxStyle(id)!} />)}
         {hoverId && !selection.includes(hoverId) && boxStyle(hoverId) && <div className="hover-box" style={boxStyle(hoverId)!} />}
         {single && nodes[single].parentId && !isRoot(nodes[nodes[single].parentId!]?.className) && layout.content[nodes[single].parentId!] && (
@@ -801,11 +841,12 @@ export function Canvas() {
           />
         )}
         {dropTarget && layout.rects[dropTarget] && (
-          <div className="drop-target" style={isRoot(nodes[dropTarget]?.className) && !isWorldGui(nodes[dropTarget].className) ? { left: pan.x, top: pan.y, width: doc.device.w * zoom, height: doc.device.h * zoom } : toRectStyle(toScreen(layout.rects[dropTarget]))}>
+          <div className="drop-target" style={isRoot(nodes[dropTarget]?.className) && !isWorldGui(nodes[dropTarget].className) ? toRectStyle(toScreen(screenBox(doc, screenOfRoot(doc, dropTarget).id))) : toRectStyle(toScreen(layout.rects[dropTarget]))}>
             <span>Move into {nodes[dropTarget]?.name}</span>
           </div>
         )}
         <RefSelectionBox />
+        {selection.length === 1 && nodes[selection[0]]?.className === 'Path2D' && <PathEditor id={selection[0]} />}
         {single && layout.rects[single] ? <QuickBar rect={toScreen(layout.rects[single])} /> : unionSel && <QuickBar rect={unionSel} />}
         {radiusBadge && <div className="rec-badge radius">{radiusBadge}</div>}
         {recording && <div className="rec-badge">● Recording keyframes at {playhead.toFixed(2)}s — edits create tweens</div>}

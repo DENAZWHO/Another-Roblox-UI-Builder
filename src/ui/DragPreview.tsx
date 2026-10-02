@@ -2,20 +2,29 @@ import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { useStore } from '../store';
 import { computeLayout, type LayoutResult } from '../model/layout';
 import { createNode, insertFragment, pathTo, unionRect, type Fragment } from '../model/doc';
-import { CONTAINER_CLASSES, defaultProps } from '../model/schema';
+import { CONTAINER_CLASSES, SINGLETON_MODIFIERS, defaultProps, isRoot, isWorldGui, modifierAllowed } from '../model/schema';
 import { applyPixelScale, pixelScaleFactor } from '../model/pixelScale';
-import type { ClassName, Doc, GuiNode } from '../model/types';
+import type { ClassName, Doc, GuiNode, ModifierClass } from '../model/types';
 import { effectiveNodes, layoutNow, stackDropIndex, stackLayout, stackOrder } from '../actions';
 import { ScreenView, type RenderCtx } from './render';
 import { useFontEpoch } from './hooks';
+import { ClassIcon } from './icons';
+import { rootOrigins, screenBox, screenOfRoot } from '../model/screens';
 
 // ---------------------------------------------------------------------------
 // What's being dragged from the Insert panel (element, component or prefab)
 
-interface DragPayload {
+interface FragmentPayload {
   label: string;
   fragment: Fragment;
+  modifier?: undefined;
 }
+interface ModifierPayload {
+  label: string;
+  modifier: ModifierClass;
+  fragment?: undefined;
+}
+type DragPayload = FragmentPayload | ModifierPayload;
 
 let current: DragPayload | null = null;
 const listeners = new Set<() => void>();
@@ -37,6 +46,38 @@ export function startDragPreview(e: React.DragEvent, label: string, build: () =>
   } catch {
     setCurrent(null);
   }
+}
+
+/** Call from onDragStart of a modifier in the Insert panel: highlights the element it would go on */
+export function startModifierDrag(e: React.DragEvent, cls: ModifierClass) {
+  setCurrent({ label: cls, modifier: cls });
+  try {
+    e.dataTransfer.setDragImage(BLANK, 0, 0);
+  } catch {
+    /* keep the default drag image */
+  }
+}
+
+/**
+ * The element a modifier dropped on the canvas goes on: the deepest one under the pointer that can have it.
+ * When none can, the element under the pointer (so the drop can say why it can't go there).
+ */
+export function canvasModifierTarget(clientX: number, clientY: number, cls: ModifierClass): string | null {
+  const s = useStore.getState();
+  const el = (document.elementFromPoint(clientX, clientY) as HTMLElement | null)?.closest('[data-nid]') as HTMLElement | null;
+  const path = el ? pathTo(s.doc.nodes, el.dataset.nid!) : [];
+  for (let i = path.length - 1; i >= 0; i--) {
+    const n = s.doc.nodes[path[i]];
+    if (n && !n.locked && modifierAllowed(cls, n.className)) return n.id;
+  }
+  return path[path.length - 1] ?? null;
+}
+
+/** Why a modifier can't go on an element, or null when it can */
+export function modifierProblem(cls: ModifierClass, n: GuiNode, nodes: Record<string, GuiNode>): string | null {
+  if (!modifierAllowed(cls, n.className)) return cls === 'UITextSizeConstraint' ? `${cls} only goes on text (${n.name} is a ${n.className})` : `${cls} can't go on a ${n.className}`;
+  if (SINGLETON_MODIFIERS.includes(cls) && n.children.some((c) => nodes[c]?.className === cls)) return `${n.name} already has a ${cls}`;
+  return null;
 }
 
 /** A single new element, as `insertNode` would create it */
@@ -89,7 +130,7 @@ function simulateStackDrop(fragment: Fragment, parentId: string, slot: number) {
   const stack = stackLayout(parentId);
   if (stack && stack.props.SortOrder !== 'LayoutOrder') sim.nodes[stack.id] = { ...stack, props: { ...stack.props, SortOrder: 'LayoutOrder' } };
   const nodes = applyPixelScale(sim.nodes, doc.rootIds, pixelScaleFactor(doc));
-  const layout = computeLayout(nodes, doc.rootIds, doc.device);
+  const layout = computeLayout(nodes, doc.rootIds, doc.device, rootOrigins(doc));
   const rects = roots.map((id) => layout.rects[id]).filter(Boolean);
   return { nodes, layout, rootId: pathTo(nodes, parentId)[0], bounds: rects.length ? unionRect(rects) : null };
 }
@@ -120,10 +161,44 @@ export function DragPreview() {
   }, [payload]);
 
   if (!payload || !pt) return null;
-  return <PreviewAt payload={payload} pt={pt} />;
+  return payload.modifier ? <ModifierPreviewAt cls={payload.modifier} pt={pt} /> : <PreviewAt payload={payload} pt={pt} />;
 }
 
-function PreviewAt({ payload, pt }: { payload: DragPayload; pt: { x: number; y: number } }) {
+/** Dragging a modifier: outline the element it would be added to */
+function ModifierPreviewAt({ cls, pt }: { cls: ModifierClass; pt: { x: number; y: number } }) {
+  const doc = useStore((s) => s.doc);
+  const zoom = useStore((s) => s.zoom);
+  const pan = useStore((s) => s.pan);
+  const docLayout = useMemo(() => layoutNow(), [doc]);
+  const wrapEl = document.querySelector('.canvas-wrap') as HTMLElement | null;
+  const under = document.elementFromPoint(pt.x, pt.y);
+  const overCanvas = !!wrapEl && !!under && wrapEl.contains(under);
+  const targetId = overCanvas ? canvasModifierTarget(pt.x, pt.y, cls) : null;
+  const r = targetId ? (isRoot(doc.nodes[targetId].className) && !isWorldGui(doc.nodes[targetId].className) ? screenBox(doc, screenOfRoot(doc, targetId).id) : docLayout.rects[targetId]) : null;
+  const problem = targetId ? modifierProblem(cls, doc.nodes[targetId], doc.nodes) : null;
+  if (overCanvas && wrapEl) {
+    const b = wrapEl.getBoundingClientRect();
+    return (
+      <div className="drag-preview-layer" style={{ left: b.left, top: b.top, width: b.width, height: b.height }}>
+        {r && (
+          <div className={`drop-target ${problem ? 'blocked' : ''}`} style={{ position: 'absolute', left: pan.x + r.x * zoom, top: pan.y + r.y * zoom, width: r.w * zoom, height: r.h * zoom }}>
+            <span>{problem ?? `Add ${cls} to ${doc.nodes[targetId!].name}`}</span>
+          </div>
+        )}
+        <div className="drag-chip mod" style={{ position: 'fixed', left: pt.x + 14, top: pt.y + 14 }}>
+          <span className="drag-chip-row"><ClassIcon cls={cls} size={14} /> {cls}</span>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="drag-chip mod" style={{ left: pt.x + 14, top: pt.y + 14 }}>
+      <span className="drag-chip-row"><ClassIcon cls={cls} size={14} /> {cls}</span>
+    </div>
+  );
+}
+
+function PreviewAt({ payload, pt }: { payload: FragmentPayload; pt: { x: number; y: number } }) {
   const doc = useStore((s) => s.doc);
   const zoom = useStore((s) => s.zoom);
   const pan = useStore((s) => s.pan);

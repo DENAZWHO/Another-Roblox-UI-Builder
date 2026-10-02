@@ -8,7 +8,8 @@ import { hexRgb, normalizeAsset } from './export/luau';
 import { rootScript } from './export/behavior';
 import { designSize, pixelScaleOn } from './model/pixelScale';
 import { exportedProps } from './model/richColors';
-import type { Doc } from './model/types';
+import type { Doc, UDim2 } from './model/types';
+import { gameStartDoc } from './model/screens';
 
 type Wire = [string, unknown];
 
@@ -53,9 +54,12 @@ interface WireNode {
   n: string;
   p: Record<string, Wire>;
   k: WireNode[];
+  /** Path2D control points: [pos, left, right] as [xs, xo, ys, yo] */
+  cp?: number[][][];
 }
 
-export function buildWire(doc: Doc) {
+export function buildWire(fullDoc: Doc) {
+  const doc = gameStartDoc(fullDoc);
   const node = (id: string): WireNode => {
     const x = doc.nodes[id];
     const p: Record<string, Wire> = {};
@@ -65,7 +69,9 @@ export function buildWire(doc: Doc) {
       if (v === undefined || def.name === 'CanvasPosition') continue;
       p[def.name] = encode(def, v);
     }
-    return { i: id, c: x.className, n: x.name, p, k: x.children.filter((c) => doc.nodes[c]).map(node) };
+    const u = (v: UDim2) => [v.x.s, v.x.o, v.y.s, v.y.o];
+    const cp = x.className === 'Path2D' && x.points?.length ? x.points.map((pt) => [u(pt.p), u(pt.l), u(pt.r)]) : undefined;
+    return { i: id, c: x.className, n: x.name, p, k: x.children.filter((c) => doc.nodes[c]).map(node), ...(cp ? { cp } : {}) };
   };
   return {
     format: 2,

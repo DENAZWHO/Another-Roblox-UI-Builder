@@ -1,16 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, ChevronRight, Eye, EyeOff, Lock, LockOpen, Plus, Search, X } from 'lucide-react';
+import { ChevronDown, ChevronRight, Eye, EyeOff, Lock, LockOpen, Monitor, Plus, Search, Trash2, X, Zap } from 'lucide-react';
+import { triggerLabel } from '../model/events';
 import { useStore } from '../store';
-import { isGuiObject, isModifier, GUI_OBJECT_CLASSES, MODIFIER_CLASSES, modifierAllowed, isRoot } from '../model/schema';
+import { isGuiObject, isModifier, GUI_OBJECT_CLASSES, MODIFIER_CLASSES, modifierAllowed, isRoot, isWorldGui } from '../model/schema';
 import { pathTo } from '../model/doc';
-import type { GuiNode, GuiObjectClass, ModifierClass } from '../model/types';
-import { addModifier, insertionParent, insertNode, insertRoot, moveNodes, rename, toggleLocked, toggleVisible, batch, insertComponent, insertPrefab, layoutNow, placeNodes, reorderInStack, stackDropIndex, stackLayout } from '../actions';
+import type { GuiNode, GuiObjectClass, ModifierClass, Screen } from '../model/types';
+import { addModifier, insertionParent, insertNode, insertRoot, moveNodes, rename, toggleLocked, toggleVisible, batch, insertComponent, insertPrefab, layoutNow, placeNodes, reorderInStack, stackDropIndex, stackLayout, addScreen, deleteScreen, moveRootToScreen, renameScreen, setScreenStart } from '../actions';
 import { ClassIcon } from './icons';
 import { PRESETS } from '../model/presets';
-import { zoomToSelection } from './viewport';
+import { zoomToScreen, zoomToSelection } from './viewport';
+import { screenRoots, screenStartsVisible, screensOf } from '../model/screens';
 import { PREFAB_DRAG_TYPE, PrefabsSection } from './PrefabsPanel';
 import { prefabs } from '../model/prefabs';
-import { elementFragment, startDragPreview } from './DragPreview';
+import { elementFragment, modifierProblem, startDragPreview, startModifierDrag } from './DragPreview';
 import { ReferencesSection } from './References';
 
 export function LeftPanel() {
@@ -162,6 +164,9 @@ function Layers() {
           </span>
           <ClassIcon cls={n.className} size={13} />
           <LayerName node={n} />
+          {n.events?.some((h) => h.actions.length) && (
+            <span className="layer-event" title={`Events: ${n.events.map((h) => triggerLabel(h.on).replace(/^When /, '')).join(', ')}`}><Zap size={11} /></span>
+          )}
           <span className="layer-actions">
             {!isRoot(n.className) && !isModifier(n.className) && (
               <button className={n.locked ? 'on' : ''} title={n.locked ? 'Unlock' : 'Lock'} onClick={(e) => { e.stopPropagation(); toggleLocked(id); }}>
@@ -186,15 +191,22 @@ function Layers() {
         {filter && <button onClick={() => setFilter('')}><X size={12} /></button>}
       </div>
       <div className="layer-section-title">
-        <span>StarterGui</span>
+        <span>Screens</span>
         <span className="root-add">
-          <button title="New ScreenGui" onClick={() => insertRoot('ScreenGui')}><Plus size={13} /></button>
+          <button title="New screen (a page of UI on its own artboard: shop, settings…)" onClick={() => { const id = addScreen(); requestAnimationFrame(() => zoomToScreen(id)); }}><Plus size={13} /></button>
           <button title="New BillboardGui (floats above a part)" onClick={() => { insertRoot('BillboardGui'); requestAnimationFrame(() => zoomToSelection()); }}><ClassIcon cls="BillboardGui" size={13} /></button>
           <button title="New SurfaceGui (drawn on a part's face)" onClick={() => { insertRoot('SurfaceGui'); requestAnimationFrame(() => zoomToSelection()); }}><ClassIcon cls="SurfaceGui" size={13} /></button>
         </span>
       </div>
       <div className="layer-list" onClick={(e) => e.target === e.currentTarget && useStore.getState().select([])}>
-        {doc.rootIds.map((r) => renderRow(r, 0))}
+        {screensOf(doc).map((sc) => (
+          <div key={sc.id}>
+            <ScreenHeader screen={sc} />
+            {screenRoots(doc, sc.id).map((r) => renderRow(r, 0))}
+          </div>
+        ))}
+        {doc.rootIds.some((r) => isWorldGui(doc.nodes[r]?.className)) && <div className="layer-group-title">In the world</div>}
+        {doc.rootIds.filter((r) => isWorldGui(doc.nodes[r]?.className)).map((r) => renderRow(r, 0))}
       </div>
       <ReferencesSection />
     </div>
@@ -250,17 +262,37 @@ const ELEMENT_INFO: Record<string, string> = {
   ImageLabel: 'Image',
   ImageButton: 'Clickable image',
   ViewportFrame: '3D viewport',
+  VideoFrame: 'Video',
 };
 
 export const INSERT_DRAG_TYPE = 'application/x-rbx-insert';
 export const COMPONENT_DRAG_TYPE = 'application/x-rbx-component';
+export const MODIFIER_DRAG_TYPE = 'application/x-rbx-modifier';
 
 /** Something dragged from the Insert panel (element, component or prefab)? */
 export const isInsertDrag = (e: React.DragEvent) =>
-  [INSERT_DRAG_TYPE, COMPONENT_DRAG_TYPE, PREFAB_DRAG_TYPE].some((t) => e.dataTransfer.types.includes(t));
+  [INSERT_DRAG_TYPE, COMPONENT_DRAG_TYPE, PREFAB_DRAG_TYPE, MODIFIER_DRAG_TYPE].some((t) => e.dataTransfer.types.includes(t));
+
+/** Is a modifier being dragged? */
+export const isModifierDrag = (e: React.DragEvent) => e.dataTransfer.types.includes(MODIFIER_DRAG_TYPE);
+
+/** Add a dragged modifier to an element (says why when it can't) */
+export function addDroppedModifier(cls: ModifierClass, targetId: string | null) {
+  const s = useStore.getState();
+  const t = targetId ? s.doc.nodes[targetId] : undefined;
+  if (!t) return s.showToast(`Drop ${cls} onto an element`);
+  const problem = modifierProblem(cls, t, s.doc.nodes);
+  if (problem) return s.showToast(problem);
+  const [id] = addModifier([t.id], cls);
+  if (!id) return;
+  s.select([t.id]);
+  s.showToast(`Added ${cls} to ${t.name}`);
+}
 
 /** Insert whatever was dragged from the Insert panel into `parentId` (optionally centred on a canvas point) */
 export function insertDropped(data: DataTransfer, parentId: string, at?: { x: number; y: number }) {
+  const mod = data.getData(MODIFIER_DRAG_TYPE) as ModifierClass;
+  if (mod) return addDroppedModifier(mod, parentId);
   const cls = data.getData(INSERT_DRAG_TYPE) as GuiObjectClass;
   const componentId = data.getData(COMPONENT_DRAG_TYPE);
   const prefabId = data.getData(PREFAB_DRAG_TYPE);
@@ -325,7 +357,18 @@ function InsertPanel() {
         {MODIFIER_CLASSES.map((m) => {
           const ok = targets.some((t) => modifierAllowed(m as ModifierClass, doc.nodes[t].className));
           return (
-            <button key={m} className="insert-row" disabled={!ok} onClick={() => addModifier(targets, m)}>
+            <button
+              key={m}
+              className={`insert-row ${ok ? '' : 'soft-disabled'}`}
+              title={ok ? `Add ${m} to the selection — or drag it onto an element` : `Drag ${m} onto an element (or select one first)`}
+              draggable
+              onDragStart={(e) => {
+                e.dataTransfer.setData(MODIFIER_DRAG_TYPE, m);
+                e.dataTransfer.effectAllowed = 'copy';
+                startModifierDrag(e, m as ModifierClass);
+              }}
+              onClick={() => (ok ? addModifier(targets, m) : useStore.getState().showToast(`Select an element first, or drag ${m} onto one`))}
+            >
               <ClassIcon cls={m} size={14} />
               {m}
             </button>
@@ -354,4 +397,63 @@ function InsertPanel() {
       </div>
     </div>
   );
+}
+
+/** A screen's row in Layers: name (double-click to rename), start toggle, add a ScreenGui, delete */
+function ScreenHeader({ screen }: { screen: Screen }) {
+  const doc = useStore((s) => s.doc);
+  const [editing, setEditing] = useState(false);
+  const many = screensOf(doc).length > 1;
+  const start = screenStartsVisible(doc, screen);
+  const roots = screenRoots(doc, screen.id);
+  return (
+    <div
+      className="screen-header"
+      title="Click to show this screen on the canvas"
+      onClick={() => {
+        if (roots[0]) useStore.getState().select([roots[0]]);
+        zoomToScreen(screen.id);
+      }}
+    >
+      <Monitor size={12} />
+      {editing ? (
+        <input
+          className="layer-rename"
+          autoFocus
+          defaultValue={screen.name}
+          onClick={(e) => e.stopPropagation()}
+          onBlur={(e) => {
+            renameScreen(screen.id, e.target.value);
+            setEditing(false);
+          }}
+          onKeyDown={(e) => {
+            e.stopPropagation();
+            if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+            if (e.key === 'Escape') setEditing(false);
+          }}
+        />
+      ) : (
+        <span className="screen-name" onDoubleClick={(e) => (e.stopPropagation(), setEditing(true))}>{screen.name}</span>
+      )}
+      <span className="screen-actions" onClick={(e) => e.stopPropagation()}>
+        {many && (
+          <button className={start ? 'on' : ''} title={start ? 'Shown when the game starts — click to start hidden' : 'Hidden when the game starts — click to show it at the start'} onClick={() => setScreenStart(screen.id, !start)}>
+            {start ? <Eye size={12} /> : <EyeOff size={12} />}
+          </button>
+        )}
+        <button title="New ScreenGui on this screen" onClick={() => { useStore.getState().select(roots.slice(0, 1)); if (!roots.length) moveToNewRoot(screen.id); else insertRoot('ScreenGui'); }}><Plus size={12} /></button>
+        {many && (
+          <button title="Delete this screen and its GUIs" onClick={() => confirm(`Delete the screen "${screen.name}"${roots.length ? ` and its ${roots.length} ScreenGui${roots.length > 1 ? 's' : ''}` : ''}?`) && deleteScreen(screen.id)}>
+            <Trash2 size={12} />
+          </button>
+        )}
+      </span>
+    </div>
+  );
+}
+
+/** A ScreenGui for an empty screen */
+function moveToNewRoot(screenId: string) {
+  const id = insertRoot('ScreenGui');
+  moveRootToScreen(id, screenId);
 }

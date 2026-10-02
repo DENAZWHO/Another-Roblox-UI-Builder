@@ -3,10 +3,13 @@
 import { applyOverrides, clipLength, ease, lerpValue, type Overrides } from './animation';
 import type { LayoutResult } from './layout';
 import { pathTo } from './doc';
-import type { AnimClip, Doc, GuiNode, ToastEnter, TriggerKind, Tween, UDim2, Vec2 } from './types';
+import type { AnimClip, Doc, EventAction, EventTrigger, GuiNode, ToastEnter, TriggerKind, Tween, UDim2, Vec2 } from './types';
+import { hasEvent } from './events';
+import { isGuiObject } from './schema';
+import { gameStartDoc, screenOfRoot } from './screens';
 
-export type UIEvent = 'click' | 'enter' | 'leave' | 'down' | 'up';
-const EVENT_TRIGGER: Record<UIEvent, TriggerKind> = { click: 'click', enter: 'hoverEnter', leave: 'hoverLeave', down: 'pressDown', up: 'pressUp' };
+export type UIEvent = 'click' | 'enter' | 'leave' | 'down' | 'up' | 'wheelUp' | 'wheelDown';
+const EVENT_TRIGGER: Partial<Record<UIEvent, TriggerKind>> = { click: 'click', enter: 'hoverEnter', leave: 'hoverLeave', down: 'pressDown', up: 'pressUp' };
 
 /** Where a clip starts from when its `from` setting is unset */
 export const defaultFrom = (clip: AnimClip): 'design' | 'current' =>
@@ -32,7 +35,7 @@ const CLICK_BUTTONS = ['TextButton', 'ImageButton'];
 export function clickButtons(doc: Doc, nodes: GuiNode[] = Object.values(doc.nodes)): GuiNode[] {
   if (doc.clickPrints === false) return [];
   const inToast = (id: string) => pathTo(doc.nodes, id).some((a) => doc.nodes[a]?.toast);
-  return nodes.filter((n) => CLICK_BUTTONS.includes(n.className) && !inToast(n.id));
+  return nodes.filter((n) => CLICK_BUTTONS.includes(n.className) && !inToast(n.id) && !hasEvent(n, 'click'));
 }
 
 /** "Play clicked", or "Card/Buy clicked" when several buttons share a name */
@@ -60,6 +63,8 @@ export class UIRuntime {
   private toastSeq = 0;
   private toastScale: Record<string, ScaleAnim> = {};
   private lastLayout: LayoutResult | null = null;
+  /** an element being dragged by its UIDragDetector */
+  private drag: { id: string; det: GuiNode; mouse: Vec2; pos: UDim2; rot: number; angle?: number; turned: number } | null = null;
   private timers: { at: number; run: () => void }[] = [];
 
   constructor(doc: Doc) {
@@ -69,7 +74,83 @@ export class UIRuntime {
   start() {
     // toast templates are hidden in game until shown
     for (const n of Object.values(this.doc.nodes)) if (n.toast) (this.values[n.id] ??= {}).Visible = false;
+    // screens that aren't visible at the start
+    const start = gameStartDoc(this.doc);
+    for (const r of this.doc.rootIds) if (start.nodes[r] !== this.doc.nodes[r]) (this.values[r] ??= {}).Enabled = false;
     for (const c of this.doc.clips) if (clipTrigger(c) === 'load') this.play(c.id);
+    for (const n of Object.values(this.doc.nodes)) this.fire(n.id, 'load');
+  }
+
+  /** Run an element's event handlers for a trigger */
+  private fire(nodeId: string, on: EventTrigger) {
+    const n = this.doc.nodes[nodeId];
+    for (const h of n?.events ?? []) if (h.on === on) this.runActions(nodeId, h.actions, 0);
+  }
+
+  /** Actions in order; Wait schedules the rest */
+  private runActions(ownerId: string, actions: EventAction[], from: number) {
+    for (let i = from; i < actions.length; i++) {
+      const a = actions[i];
+      if (a.kind === 'wait') {
+        this.after(Math.max(0, a.seconds ?? 0), () => this.runActions(ownerId, actions, i + 1));
+        return;
+      }
+      this.runAction(ownerId, a);
+    }
+  }
+
+  private runAction(ownerId: string, a: EventAction) {
+    const target = a.target ?? ownerId;
+    const set = (prop: string, v: any) => {
+      (this.values[target] ??= {})[prop] = v;
+      this.active.delete(target + '.' + prop);
+    };
+    switch (a.kind) {
+      case 'show': return set('Visible', true);
+      case 'hide': return set('Visible', false);
+      case 'toggle': return set('Visible', this.current(target, 'Visible') === false);
+      case 'play': return a.clipId && this.play(a.clipId);
+      case 'set': return a.prop && set(a.prop, a.value);
+      case 'tween': return a.prop && this.tweenNow(target, a.prop, a.value, a.duration ?? 0.3, a.style ?? 'Quad', a.direction ?? 'Out');
+      case 'toast': return a.toastId && this.showToast(a.toastId, a.title, a.message);
+      case 'print': return this.log(a.text ?? '');
+      case 'nextPage': return this.turnPage(target, 1);
+      case 'prevPage': return this.turnPage(target, -1);
+      case 'jumpPage': return this.turnPage(target, 0, a.page ?? 0);
+      case 'showScreen': return a.screenId && this.showScreen(a.screenId, !a.keepOthers);
+    }
+  }
+
+  /** Turn a screen's ScreenGuis on (and the other screens' off) */
+  showScreen(screenId: string, hideOthers = true) {
+    for (const r of this.doc.rootIds) {
+      if (this.doc.nodes[r]?.className !== 'ScreenGui') continue;
+      const mine = screenOfRoot(this.doc, r).id === screenId;
+      if (mine) (this.values[r] ??= {}).Enabled = this.doc.nodes[r].props.Enabled !== false;
+      else if (hideOthers) (this.values[r] ??= {}).Enabled = false;
+    }
+  }
+
+  /** UIPageLayout: Next (+1) / Previous (-1) / JumpToIndex, animated with its TweenTime and easing */
+  private turnPage(frameId: string, step: number, to?: number) {
+    const frame = this.doc.nodes[frameId];
+    const layout = frame?.children.map((c) => this.doc.nodes[c]).find((c) => c?.className === 'UIPageLayout');
+    if (!layout) return;
+    const count = frame.children.filter((c) => this.doc.nodes[c] && isGuiObject(this.doc.nodes[c].className) && this.current(c, 'Visible') !== false).length;
+    if (!count) return;
+    const target = this.pageTarget[layout.id] ?? layout.page ?? 0;
+    let next = to ?? target + step;
+    if (layout.props.Circular) next = ((next % count) + count) % count;
+    next = Math.max(0, Math.min(count - 1, next));
+    this.pageTarget[layout.id] = next;
+    if (this.current(layout.id, '__page') === undefined) (this.values[layout.id] ??= {}).__page = layout.page ?? 0;
+    if (layout.props.Animated === false) (this.values[layout.id] ??= {}).__page = next;
+    else this.tweenNow(layout.id, '__page', next, layout.props.TweenTime ?? 1, layout.props.EasingStyle ?? 'Back', layout.props.EasingDirection ?? 'Out');
+  }
+  private pageTarget: Record<string, number> = {};
+
+  private log(text: string) {
+    this.output = [...this.output.slice(-49), { text, time: Date.now() }];
   }
 
   private node(id: string): GuiNode | undefined {
@@ -198,10 +279,96 @@ export class UIRuntime {
     for (const c of this.doc.clips) if (c.triggerNodeId && clipTrigger(c) !== 'load' && clipTrigger(c) !== 'manual') out.add(c.triggerNodeId);
     for (const n of Object.values(this.doc.nodes)) if (n.effects?.some((e) => e.kind === 'hoverScale' || e.kind === 'pressScale')) out.add(n.id);
     for (const n of Object.values(this.doc.nodes)) if (n.toast?.triggerNodeId) out.add(n.toast.triggerNodeId);
+    for (const n of Object.values(this.doc.nodes)) if (n.events?.some((h) => h.on !== 'load' && h.actions.length)) out.add(n.id);
+    for (const n of Object.values(this.doc.nodes)) if (this.detector(n.id)) out.add(n.id);
+    for (const n of Object.values(this.doc.nodes)) if (n.className === 'UIPageLayout' && n.parentId) out.add(n.parentId);
     return out;
   }
 
+  /** The element's enabled UIDragDetector, if it has one */
+  private detector(id: string): GuiNode | undefined {
+    const n = this.doc.nodes[id];
+    return n?.children.map((c) => this.doc.nodes[c]).find((c) => c?.className === 'UIDragDetector' && c.props.Enabled !== false && c.props.DragStyle !== 'Scriptable');
+  }
+
+  /** Mouse button released anywhere: stop dragging */
+  release() {
+    this.drag = null;
+  }
+
+  /** Move / turn the dragged element to follow the mouse (UIDragDetector semantics) */
+  private updateDrag() {
+    const d = this.drag;
+    const lay = this.lastLayout;
+    if (!d || !this.mouse || !lay) return;
+    const n = this.doc.nodes[d.id];
+    const r = lay.rects[d.id];
+    const parent = lay.content[n.parentId!] ?? lay.rects[n.parentId!];
+    if (!r || !parent) return;
+    const p = d.det.props;
+    if (p.DragStyle === 'Rotate') {
+      const cx = r.x + r.w / 2;
+      const cy = r.y + r.h / 2;
+      // add up small steps so turning past the left side doesn't jump by 360
+      const a = (Math.atan2(this.mouse.y - cy, this.mouse.x - cx) * 180) / Math.PI;
+      const last = d.angle ?? (Math.atan2(d.mouse.y - cy, d.mouse.x - cx) * 180) / Math.PI;
+      d.turned += ((((a - last) % 360) + 540) % 360) - 180;
+      d.angle = a;
+      let deg = d.turned;
+      if (p.MaxDragAngle > p.MinDragAngle) deg = Math.min(p.MaxDragAngle, Math.max(p.MinDragAngle, deg));
+      (this.values[d.id] ??= {}).Rotation = d.rot + deg;
+      return;
+    }
+    let dx = this.mouse.x - d.mouse.x;
+    let dy = this.mouse.y - d.mouse.y;
+    if (p.DragStyle === 'TranslateLine') {
+      const ax: Vec2 = p.DragAxis ?? { x: 1, y: 0 };
+      const len = Math.hypot(ax.x, ax.y) || 1;
+      const t = (dx * ax.x + dy * ax.y) / len;
+      dx = (ax.x / len) * t;
+      dy = (ax.y / len) * t;
+    }
+    // Min/MaxDragTranslation limit how far it can go from where the drag started (when Max > Min)
+    const mn: UDim2 = p.MinDragTranslation;
+    const mx: UDim2 = p.MaxDragTranslation;
+    const lim = (v: number, a: number, b: number) => (b > a ? Math.min(b, Math.max(a, v)) : v);
+    dx = lim(dx, mn.x.s * parent.w + mn.x.o, mx.x.s * parent.w + mx.x.o);
+    dy = lim(dy, mn.y.s * parent.h + mn.y.o, mx.y.s * parent.h + mx.y.o);
+    // BoundingUI: keep the element (or just the grab point) inside another element
+    const bound = d.det.boundingUI ? lay.rects[d.det.boundingUI] : undefined;
+    if (bound) {
+      const start = { x: r.x - this.offsetFromStart(d, parent).x, y: r.y - this.offsetFromStart(d, parent).y };
+      if (p.BoundingBehavior === 'HitPoint') {
+        dx = Math.min(bound.x + bound.w, Math.max(bound.x, d.mouse.x + dx)) - d.mouse.x;
+        dy = Math.min(bound.y + bound.h, Math.max(bound.y, d.mouse.y + dy)) - d.mouse.y;
+      } else {
+        dx = Math.min(bound.x + bound.w - r.w, Math.max(bound.x, start.x + dx)) - start.x;
+        dy = Math.min(bound.y + bound.h - r.h, Math.max(bound.y, start.y + dy)) - start.y;
+      }
+    }
+    const scale = p.ResponseStyle === 'Scale' || p.ResponseStyle === 'CustomScale';
+    (this.values[d.id] ??= {}).Position = scale
+      ? { x: { s: d.pos.x.s + dx / parent.w, o: d.pos.x.o }, y: { s: d.pos.y.s + dy / parent.h, o: d.pos.y.o } }
+      : { x: { s: d.pos.x.s, o: d.pos.x.o + dx }, y: { s: d.pos.y.s, o: d.pos.y.o + dy } };
+  }
+
+  /** How far (in pixels) the dragged element has already moved from where the drag started */
+  private offsetFromStart(d: NonNullable<UIRuntime['drag']>, parent: { w: number; h: number }): Vec2 {
+    const cur = this.current(d.id, 'Position') as UDim2;
+    return { x: (cur.x.s - d.pos.x.s) * parent.w + cur.x.o - d.pos.x.o, y: (cur.y.s - d.pos.y.s) * parent.h + cur.y.o - d.pos.y.o };
+  }
+
   event(nodeId: string, ev: UIEvent) {
+    if (ev === 'wheelUp' || ev === 'wheelDown') {
+      const layout = this.doc.nodes[nodeId]?.children.map((c) => this.doc.nodes[c]).find((c) => c?.className === 'UIPageLayout');
+      if (layout && layout.props.ScrollWheelInputEnabled !== false) this.turnPage(nodeId, ev === 'wheelDown' ? 1 : -1);
+      return;
+    }
+    if (ev === 'down' && this.mouse && !this.drag) {
+      const det = this.detector(nodeId);
+      if (det) this.drag = { id: nodeId, det, mouse: { ...this.mouse }, pos: structuredClone(this.current(nodeId, 'Position')), rot: this.current(nodeId, 'Rotation') ?? 0, turned: 0 };
+    }
+    if (ev === 'up') this.release();
     const st = this.fx[nodeId];
     if (st) {
       if (ev === 'enter') st.hovered = true;
@@ -212,14 +379,14 @@ export class UIRuntime {
     const trig = EVENT_TRIGGER[ev];
     for (const c of this.doc.clips) if (clipTrigger(c) === trig && c.triggerNodeId === nodeId) this.play(c.id);
     if (ev === 'click') for (const n of Object.values(this.doc.nodes)) if (n.toast?.triggerNodeId === nodeId) this.showToast(n.id);
-    if (ev === 'click' && clickButtons(this.doc).some((n) => n.id === nodeId)) {
-      this.output = [...this.output.slice(-49), { text: clickMessage(this.doc, this.doc.nodes[nodeId]), time: Date.now() }];
-    }
+    if (ev === 'click' && clickButtons(this.doc).some((n) => n.id === nodeId)) this.log(clickMessage(this.doc, this.doc.nodes[nodeId]));
+    this.fire(nodeId, trig as EventTrigger);
   }
 
   tick(dt: number, layout: LayoutResult) {
     this.time += dt;
     this.lastLayout = layout;
+    this.updateDrag();
     const dueTimers = this.timers.filter((t) => t.at <= this.time);
     if (dueTimers.length) {
       this.timers = this.timers.filter((t) => t.at > this.time);
@@ -232,6 +399,12 @@ export class UIRuntime {
       this.scheduled = this.scheduled.filter((s) => s.at > this.time);
       for (const s of due) {
         const key = s.tween.nodeId + '.' + s.tween.prop;
+        if (s.tween.duration <= 0) {
+          // a jump (e.g. "start transparent" before a fade in): applies before tweens starting at the same moment read it
+          (this.values[s.tween.nodeId] ??= {})[s.tween.prop] = s.tween.to;
+          this.active.delete(key);
+          continue;
+        }
         this.active.set(key, { nodeId: s.tween.nodeId, prop: s.tween.prop, from: this.current(s.tween.nodeId, s.tween.prop), tween: s.tween, at: s.at });
       }
     }

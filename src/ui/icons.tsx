@@ -1,7 +1,7 @@
 import {
   AppWindow, Blend, Box, Frame, Image, ImagePlus, LayoutGrid, Monitor, PaintBucket, Ratio, Rows3,
   Scaling, ScrollText, Spline, SquareDashed, SquareRoundCorner, TextCursorInput, Type, CaseSensitive,
-  MousePointerClick, Signpost, Presentation, type LucideIcon,
+  MousePointerClick, Signpost, Presentation, Clapperboard, Maximize2, Move, Layers2, StretchHorizontal, GalleryHorizontal, Table, type LucideIcon,
 } from 'lucide-react';
 import type { ClassName } from '../model/types';
 
@@ -18,6 +18,7 @@ export const CLASS_ICONS: Record<ClassName, LucideIcon> = {
   ImageLabel: Image,
   ImageButton: ImagePlus,
   ViewportFrame: Box,
+  VideoFrame: Clapperboard,
   UICorner: SquareRoundCorner,
   UIStroke: Spline,
   UIGradient: Blend,
@@ -27,6 +28,13 @@ export const CLASS_ICONS: Record<ClassName, LucideIcon> = {
   UIAspectRatioConstraint: Ratio,
   UISizeConstraint: Scaling,
   UITextSizeConstraint: CaseSensitive,
+  UIScale: Maximize2,
+  UIDragDetector: Move,
+  UIShadow: Layers2,
+  UIFlexItem: StretchHorizontal,
+  UIPageLayout: GalleryHorizontal,
+  UITableLayout: Table,
+  Path2D: Spline,
 };
 
 export const CLASS_COLORS: Partial<Record<ClassName, string>> = {
@@ -42,6 +50,13 @@ export const CLASS_COLORS: Partial<Record<ClassName, string>> = {
   UIAspectRatioConstraint: '#f472b6',
   UISizeConstraint: '#f472b6',
   UITextSizeConstraint: '#f472b6',
+  UIScale: '#f472b6',
+  UIDragDetector: '#60a5fa',
+  UIShadow: '#94a3b8',
+  UIFlexItem: '#34d399',
+  UIPageLayout: '#34d399',
+  UITableLayout: '#34d399',
+  Path2D: '#f59e0b',
 };
 
 export function ClassIcon({ cls, size = 14 }: { cls: ClassName; size?: number }) {

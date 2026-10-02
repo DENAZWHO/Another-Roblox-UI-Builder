@@ -3,8 +3,9 @@ import { identifier } from '../model/doc';
 import { CLASS_PROPS, isWorldGui, type PropDef } from '../model/schema';
 import { adorneeExpr, behaviorLines, clickLines, pixelScalerLines } from './behavior';
 import { designSize, pixelScaleOn } from '../model/pixelScale';
+import { gameStartDoc } from '../model/screens';
 import { exportedProps } from '../model/richColors';
-import type { Doc, GuiNode } from '../model/types';
+import type { Doc, GuiNode, PathPoint, UDim2 } from '../model/types';
 
 export const num = (n: number) => {
   if (n === Infinity) return 'math.huge';
@@ -118,7 +119,14 @@ export interface LuauOptions {
   behavior: boolean;
 }
 
-export function generateLuau(doc: Doc, opts: LuauOptions): string {
+/** Path2D control points as a Luau array of Path2DControlPoint */
+export function pathPointsLua(points: PathPoint[]): string {
+  const u2 = (u: UDim2) => `UDim2.new(${num(u.x.s)}, ${num(u.x.o)}, ${num(u.y.s)}, ${num(u.y.o)})`;
+  return `{ ${points.map((pt) => `Path2DControlPoint.new(${u2(pt.p)}, ${u2(pt.l)}, ${u2(pt.r)})`).join(', ')} }`;
+}
+
+export function generateLuau(fullDoc: Doc, opts: LuauOptions): string {
+  const doc = gameStartDoc(fullDoc);
   const vars = makeVarNames(doc, doc.rootIds);
   const module = opts.style === 'module';
   const I = module ? '\t' : '';
@@ -147,6 +155,7 @@ export function generateLuau(doc: Doc, opts: LuauOptions): string {
     out.push(`${I}local ${v} = Instance.new("${n.className}")`);
     out.push(`${I}${v}.Name = ${luaString(n.name)}`);
     for (const [def, val] of emittedProps(n)) out.push(`${I}${v}.${def.name} = ${luaValue(def, val)}`);
+    if (n.className === 'Path2D' && n.points?.length) out.push(`${I}${v}:SetControlPoints(${pathPointsLua(n.points)})`);
     for (const c of n.children) emit(c, v);
     if (parentVar) out.push(`${I}${v}.Parent = ${parentVar}`);
     if (module) out.push(`${I}ui.${v} = ${v}`);

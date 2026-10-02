@@ -35,6 +35,7 @@ export const SHORTCUT_GROUPS: ShortcutGroup[] = [
     items: [
       { label: 'Move / select', combos: one('V') },
       { label: 'Hand (pan)', combos: [['H'], ['Space', 'Drag']] },
+      { label: 'Pen (draw a Path2D)', combos: one('P'), note: 'click = corner, drag = curve, click the first point = close, Enter = done' },
       { label: 'Pick colour from the screen', combos: one('C'), note: 'applies to the selection (fill, or text / image colour when it has no fill). Firefox / Safari: picks from a snapshot of the page, Esc or right-click cancels' },
       { label: 'Frame', combos: [['F'], ['R']] },
       { label: 'ScrollingFrame', combos: one('S') },

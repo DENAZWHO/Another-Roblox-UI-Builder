@@ -26,11 +26,22 @@ export function scaledPixelProps(n: GuiNode, f: number): Record<string, any> | n
   const p = n.props;
   switch (n.className) {
     case 'UIStroke':
-      return { Thickness: p.Thickness * f };
+      return p.StrokeSizingMode === 'ScaledSize' ? { BorderOffset: sU(p.BorderOffset ?? { s: 0, o: 0 }, f) } : { Thickness: p.Thickness * f, BorderOffset: sU(p.BorderOffset ?? { s: 0, o: 0 }, f) };
     case 'UITextSizeConstraint':
       return { MaxTextSize: Math.max(1, Math.round(p.MaxTextSize * f)), MinTextSize: Math.max(1, Math.round(p.MinTextSize * f)) };
-    case 'UICorner':
-      return { CornerRadius: sU(p.CornerRadius, f) };
+    case 'UICorner': {
+      const out: Record<string, any> = { CornerRadius: sU(p.CornerRadius, f) };
+      for (const k of ['TopLeftRadius', 'TopRightRadius', 'BottomRightRadius', 'BottomLeftRadius']) if (p[k]) out[k] = sU(p[k], f);
+      return out;
+    }
+    case 'Path2D':
+      return { Thickness: p.Thickness * f };
+    case 'UIShadow':
+      return { BlurRadius: sU(p.BlurRadius, f), Offset: sU2(p.Offset, f), Spread: sU2(p.Spread, f) };
+    case 'UIPageLayout':
+      return { Padding: sU(p.Padding, f) };
+    case 'UITableLayout':
+      return { Padding: sU2(p.Padding, f) };
     case 'UIPadding':
       return { PaddingTop: sU(p.PaddingTop, f), PaddingBottom: sU(p.PaddingBottom, f), PaddingLeft: sU(p.PaddingLeft, f), PaddingRight: sU(p.PaddingRight, f) };
     case 'UIListLayout':

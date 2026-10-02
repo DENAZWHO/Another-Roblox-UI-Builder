@@ -19,7 +19,8 @@ export type GuiObjectClass =
   | 'TextBox'
   | 'ImageLabel'
   | 'ImageButton'
-  | 'ViewportFrame';
+  | 'ViewportFrame'
+  | 'VideoFrame';
 
 export type ModifierClass =
   | 'UICorner'
@@ -30,12 +31,30 @@ export type ModifierClass =
   | 'UIGridLayout'
   | 'UIAspectRatioConstraint'
   | 'UISizeConstraint'
-  | 'UITextSizeConstraint';
+  | 'UITextSizeConstraint'
+  | 'UIScale'
+  | 'UIDragDetector'
+  | 'UIShadow'
+  | 'UIFlexItem'
+  | 'UIPageLayout'
+  | 'UITableLayout';
 
 /** Top-level containers: the screen, or GUIs that live in the 3D world */
 export type RootClass = 'ScreenGui' | 'BillboardGui' | 'SurfaceGui';
 
-export type ClassName = RootClass | GuiObjectClass | ModifierClass;
+/** Drawn things that aren't GuiObjects (no Size / Position of their own) */
+export type ShapeClass = 'Path2D';
+
+export type ClassName = RootClass | GuiObjectClass | ModifierClass | ShapeClass;
+
+/** A Path2D control point: position and tangent handles, relative to the parent's size (Path2DControlPoint) */
+export interface PathPoint {
+  p: UDim2;
+  /** incoming handle, relative to p */
+  l: UDim2;
+  /** outgoing handle, relative to p */
+  r: UDim2;
+}
 
 // ---------------------------------------------------------------------------
 // Behaviours (exported as Luau, simulated in Preview)
@@ -109,6 +128,56 @@ export interface GuiNode {
   textColors?: TextColors;
   /** BillboardGui / SurfaceGui: path of the part to attach to, e.g. "Workspace.Shop.Sign" */
   adornee?: string;
+  /** "When this happens, do that" — run in Preview and exported as Connect handlers */
+  events?: EventHandler[];
+  /** UIDragDetector: element it must stay inside (its BoundingUI; set by the behaviour script) */
+  boundingUI?: string;
+  /** UIPageLayout: page shown in the editor (0-based; not exported) */
+  page?: number;
+  /** ScreenGui: the screen (page of UI) it belongs to */
+  screen?: string;
+  /** Path2D: control points (set with SetControlPoints) */
+  points?: PathPoint[];
+  /** Gamepad navigation: NextSelectionUp/Down/Left/Right and SelectionImageObject (element ids; set by the behaviour script) */
+  nav?: { up?: string; down?: string; left?: string; right?: string; image?: string };
+}
+
+export type EventTrigger = 'click' | 'hoverEnter' | 'hoverLeave' | 'pressDown' | 'pressUp' | 'load';
+export type EventActionKind = 'show' | 'hide' | 'toggle' | 'play' | 'tween' | 'set' | 'toast' | 'print' | 'wait' | 'nextPage' | 'prevPage' | 'jumpPage' | 'showScreen';
+
+export interface EventAction {
+  id: string;
+  kind: EventActionKind;
+  /** Element acted on (show / hide / toggle / tween / set); unset = the element that has the event */
+  target?: string;
+  /** play */
+  clipId?: string;
+  /** tween / set */
+  prop?: string;
+  value?: any;
+  duration?: number;
+  style?: EasingStyle;
+  direction?: EasingDirection;
+  /** toast: template + texts */
+  toastId?: string;
+  title?: string;
+  message?: string;
+  /** print */
+  text?: string;
+  /** wait */
+  seconds?: number;
+  /** jumpPage: 0-based page */
+  page?: number;
+  /** showScreen: the screen to show, and whether the others are hidden (default yes) */
+  screenId?: string;
+  keepOthers?: boolean;
+}
+
+export interface EventHandler {
+  id: string;
+  on: EventTrigger;
+  /** Run in order; a Wait pauses the ones after it */
+  actions: EventAction[];
 }
 
 export type EasingStyle =
@@ -144,7 +213,13 @@ export interface AnimClip {
   from?: 'design' | 'current';
 }
 
-export interface Device { name: string; w: number; h: number }
+export interface Device {
+  name: string;
+  w: number;
+  h: number;
+  /** Notch / home-bar insets of a phone (Roblox's device safe area) */
+  safe?: { l: number; t: number; r: number; b: number };
+}
 
 export interface PreviewUser { id: number; name: string; displayName: string }
 
@@ -164,6 +239,16 @@ export interface Doc {
   clickPrints?: boolean;
   /** Reference images (editor only: never exported or synced) */
   references?: RefImage[];
+  /** Screens (pages of UI), each with its own artboard; unset = one "Main" screen */
+  screens?: Screen[];
+}
+
+/** A page of UI (main menu, shop…): its ScreenGuis are drawn on their own artboard */
+export interface Screen {
+  id: string;
+  name: string;
+  /** Shown when the game starts (default: only the first screen) */
+  startVisible?: boolean;
 }
 
 /** A picture to design against, e.g. a mockup or a screenshot of the game, placed on the canvas */

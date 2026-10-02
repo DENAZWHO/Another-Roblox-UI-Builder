@@ -5,23 +5,26 @@ import {
   Smartphone, TextAlignStart, Trash, Upload, X,
 } from 'lucide-react';
 import { useStore } from '../store';
-import {
-  ANIMATABLE_PROPS, CLASS_PROPS, DEVICES, ENUMS, MODIFIER_CLASSES, isGuiObject, isImage, isModifier, isText, modifierAllowed, propDef,
-  type PropDef, isRoot, isWorldGui,
-} from '../model/schema';
+import { ANIMATABLE_PROPS, CLASS_PROPS, DEVICES, ENUMS, MODIFIER_CLASSES, isGuiObject, isImage, isModifier, isText, modifierAllowed, propDef, type PropDef, isRoot, isWorldGui, CORNER_PROPS } from '../model/schema';
 import { FONT_FAMILIES, FONT_WEIGHTS, fontFamily, nearestFace, slantedItalic, weightName } from '../model/fonts';
 import { EASING_DIRECTIONS, EASING_STYLES, ease } from '../model/animation';
 import type { ColorKey, GuiNode, ModifierClass, NumberKey, Tween } from '../model/types';
-import { addModifier, addTween, align, convertUnits, deleteTween, fixedSizeReason, makeResponsive, moveInside, overlapIssues, setProp, updateTween } from '../actions';
+import { addModifier, addTween, align, convertUnits, deleteTween, fixedSizeReason, makeResponsive, moveInside, overlapIssues, setProp, updateTween, moveRootToScreen, setScreenStart } from '../actions';
 import { AvatarRows, BindRow, ClipSettings, CornerRow, EffectsSection, PreviewUserRow, ResponsiveCheck, ToastSection, WorldSection } from './BehaviorPanels';
 import { removeNode } from '../model/doc';
 import { ColorField, NumberField, RichTextField, Row, Segmented, SelectField, TextField, Toggle, UDim2Field, UDimField, Vec2Field } from './fields';
 import { ClassIcon } from './icons';
 import { RichColorEditor } from './RichColorEditor';
 import { ReferenceProps } from './References';
+import { EventsSection } from './EventsPanel';
+import { GamepadSection } from './GamepadPanel';
+import { PathSection } from './PathTool';
+import { targetOptions } from '../model/events';
+import { AnimationsSection } from './AnimationsPanel';
 import { useEffectiveNodes, useFontEpoch } from './hooks';
 import { computeLayout } from '../model/layout';
 import type { Doc } from '../model/types';
+import { rootOrigins, screenOfRoot, screenStartsVisible, screensOf } from '../model/screens';
 
 export function PropertiesPanel() {
   const selection = useStore((s) => s.selection);
@@ -142,6 +145,7 @@ function SelectionProps({ ids, nodes }: { ids: string[]; nodes: Record<string, G
         <span className="sel-class">{multi && same.length !== ids.length ? 'Mixed' : cls}</span>
       </div>
       {isWorldGui(cls) && !multi && <WorldSection node={primary} />}
+      {cls === 'ScreenGui' && !multi && <ScreenSection node={primary} />}
       {cls === 'ScreenGui' && !multi && (
         <Section title="Responsiveness">
           <ResponsiveCheck />
@@ -149,6 +153,8 @@ function SelectionProps({ ids, nodes }: { ids: string[]; nodes: Record<string, G
       )}
       {isRoot(cls) && <GenericProps ids={same} node={primary} />}
       {isModifier(cls) && <ModifierCard node={primary} ids={same} standalone />}
+      {cls === 'Path2D' && <ModifierCard node={primary} ids={same} standalone />}
+      {cls === 'Path2D' && !multi && <PathSection node={primary} />}
       {isGuiObject(cls) && <GuiObjectProps ids={ids} node={primary} nodes={nodes} />}
     </>
   );
@@ -322,7 +328,7 @@ function GuiObjectProps({ ids, node, nodes }: { ids: string[]; node: GuiNode; no
   const p = node.props;
   const cls = node.className;
   const set = (name: string) => (v: any) => setProp(ids.filter((id) => propDef(nodes[id].className, name)), name, v);
-  const layout = useMemo(() => computeLayout(nodes, doc.rootIds, doc.device), [nodes, doc.rootIds, doc.device]);
+  const layout = useMemo(() => computeLayout(nodes, doc.rootIds, doc.device, rootOrigins(doc)), [nodes, doc]);
   const laidOut = layout.laidOut.has(node.id);
   const parentLayout = node.parentId ? nodes[node.parentId].children.map((c) => nodes[c]).find((c) => c?.className === 'UIListLayout' || c?.className === 'UIGridLayout') : undefined;
   const abs = layout.rects[node.id];
@@ -380,6 +386,20 @@ function GuiObjectProps({ ids, node, nodes }: { ids: string[]; node: GuiNode; no
         <Row label={L('Size')}>
           <UDim2Field value={p.Size} onChange={set('Size')} />
         </Row>
+        <Row label="Auto size" title="AutomaticSize: grow to fit its text and children (never smaller than Size)">
+          <Segmented
+            value={(p.AutomaticSize ?? 'None') as string}
+            options={['None', 'X', 'Y', 'XY'].map((v) => ({ value: v, label: v, title: v === 'None' ? 'Fixed size' : `Grow on ${v} to fit the content` }))}
+            onChange={set('AutomaticSize')}
+          />
+        </Row>
+        <Row label="Relative to" title="SizeConstraint: which side of the parent Scale sizes are measured against">
+          <SelectField
+            value={p.SizeConstraint ?? 'RelativeXY'}
+            options={[['RelativeXY', 'Width & height (XY)'], ['RelativeXX', 'Width only (XX) — stays square'], ['RelativeYY', 'Height only (YY) — stays square']]}
+            onChange={set('SizeConstraint')}
+          />
+        </Row>
         {abs && (
           <Row label="">
             <span className="abs-info">Absolute {Math.round(abs.w)} × {Math.round(abs.h)} at ({Math.round(abs.x)}, {Math.round(abs.y)})</span>
@@ -404,6 +424,7 @@ function GuiObjectProps({ ids, node, nodes }: { ids: string[]; node: GuiNode; no
           <div className="flags">
             <Toggle value={p.Visible} onChange={set('Visible')} label="Visible" />
             <Toggle value={p.ClipsDescendants} onChange={set('ClipsDescendants')} label="Clips" />
+            <Toggle value={p.Interactable !== false} onChange={set('Interactable')} label="Interactable" />
           </div>
         </Row>
       </Section>
@@ -418,6 +439,11 @@ function GuiObjectProps({ ids, node, nodes }: { ids: string[]; node: GuiNode; no
             <ColorField value={p.BorderColor3} onChange={set('BorderColor3')} />
           </div>
         </Row>
+        {p.BorderSizePixel > 0 && (
+          <Row label="Border mode" title="BorderMode: outside the box, half in / half out, or inside it">
+            <Segmented value={(p.BorderMode ?? 'Outline') as string} options={['Outline', 'Middle', 'Inset'].map((v) => ({ value: v, label: v }))} onChange={set('BorderMode')} />
+          </Row>
+        )}
         <CornerRow ids={ids} node={node} nodes={nodes} />
       </Section>
 
@@ -478,6 +504,15 @@ function GuiObjectProps({ ids, node, nodes }: { ids: string[]; node: GuiNode; no
             </div>
           </Row>
           <Row label="LineHeight"><NumberField value={p.LineHeight} step={0.1} min={0.5} max={3} precision={2} onChange={set('LineHeight')} label="" /></Row>
+          <Row label="Truncate" title="TextTruncate: end with … when the text doesn't fit">
+            <SelectField value={p.TextTruncate ?? 'None'} options={[['None', 'None'], ['AtEnd', 'At end …'], ['SplitWord', 'Split word …']]} onChange={set('TextTruncate')} />
+          </Row>
+          <Row label="Visible letters" title="MaxVisibleGraphemes: show only the first N letters (-1 = all). Animate it for typewriter text.">
+            <NumberField value={p.MaxVisibleGraphemes ?? -1} min={-1} precision={0} onChange={(v) => set('MaxVisibleGraphemes')(Math.round(v))} label="" suffix={(p.MaxVisibleGraphemes ?? -1) < 0 ? 'all' : ''} />
+          </Row>
+          <Row label="Direction" title="TextDirection">
+            <Segmented value={(p.TextDirection ?? 'Auto') as string} options={[{ value: 'Auto', label: 'Auto' }, { value: 'LeftToRight', label: 'LTR' }, { value: 'RightToLeft', label: 'RTL' }]} onChange={set('TextDirection')} />
+          </Row>
           <Row label="Text stroke" title="Legacy TextStroke (UIStroke is recommended)">
             <ColorField value={p.TextStrokeColor3} onChange={set('TextStrokeColor3')} transparency={p.TextStrokeTransparency} onTransparency={set('TextStrokeTransparency')} />
           </Row>
@@ -490,16 +525,20 @@ function GuiObjectProps({ ids, node, nodes }: { ids: string[]; node: GuiNode; no
               </div>
             </Row>
           )}
-          {cls === 'TextButton' && <Row label="Button"><Toggle value={p.AutoButtonColor} onChange={set('AutoButtonColor')} label="AutoButtonColor" /></Row>}
+          {cls === 'TextButton' && <Row label="Button"><div className="flags"><Toggle value={p.AutoButtonColor} onChange={set('AutoButtonColor')} label="AutoButtonColor" /><Toggle value={!!p.Modal} onChange={set('Modal')} label="Modal" /></div></Row>}
         </Section>
       )}
 
       {isImage(cls) && <ImageSection ids={ids} node={node} set={set} />}
 
-      {cls === 'ScrollingFrame' && <GenericProps ids={ids} node={node} only={['CanvasSize', 'CanvasPosition', 'AutomaticCanvasSize', 'ScrollingDirection', 'ScrollBarThickness', 'ScrollBarImageColor3', 'ScrollBarImageTransparency', 'ScrollingEnabled']} />}
+      {cls === 'ScrollingFrame' && <GenericProps ids={ids} node={node} only={['CanvasSize', 'CanvasPosition', 'AutomaticCanvasSize', 'ScrollingDirection', 'ScrollBarThickness', 'ScrollBarImageColor3', 'ScrollBarImageTransparency', 'ScrollingEnabled', 'VerticalScrollBarPosition', 'VerticalScrollBarInset', 'HorizontalScrollBarInset', 'ElasticBehavior', 'TopImage', 'MidImage', 'BottomImage']} />}
+      {cls === 'VideoFrame' && <GenericProps ids={ids} node={node} only={['Video', 'Looped', 'Playing', 'Volume']} />}
       {cls === 'CanvasGroup' && <GenericProps ids={ids} node={node} only={['GroupTransparency', 'GroupColor3']} />}
       {cls === 'ViewportFrame' && <GenericProps ids={ids} node={node} only={['Ambient', 'LightColor', 'ImageColor3', 'ImageTransparency']} />}
 
+      <GamepadSection ids={ids} node={node} />
+      {ids.length === 1 && <EventsSection node={node} />}
+      {ids.length === 1 && <AnimationsSection node={node} />}
       <EffectsSection ids={ids} node={node} />
       {ids.length === 1 && <ToastSection node={node} />}
 
@@ -559,7 +598,22 @@ function ImageSection({ ids, node, set }: { ids: string[]; node: GuiNode; set: (
         </>
       )}
       {p.ScaleType === 'Tile' && <Row label="TileSize"><UDim2Field value={p.TileSize} onChange={set('TileSize')} /></Row>}
-      {node.className === 'ImageButton' && <Row label="Button"><Toggle value={p.AutoButtonColor} onChange={set('AutoButtonColor')} label="AutoButtonColor" /></Row>}
+      <Row label="Sprite offset" title="ImageRectOffset: top-left of the part of the image to show (sprite sheets), in image pixels">
+        <Vec2Field value={p.ImageRectOffset ?? { x: 0, y: 0 }} onChange={set('ImageRectOffset')} />
+      </Row>
+      <Row label="Sprite size" title="ImageRectSize: size of that part (0 = the whole image)">
+        <Vec2Field value={p.ImageRectSize ?? { x: 0, y: 0 }} onChange={set('ImageRectSize')} />
+      </Row>
+      <Row label="Resample" title="ResampleMode: Pixelated keeps pixel art crisp">
+        <Segmented value={(p.ResampleMode ?? 'Default') as string} options={[{ value: 'Default', label: 'Smooth' }, { value: 'Pixelated', label: 'Pixelated' }]} onChange={set('ResampleMode')} />
+      </Row>
+      {node.className === 'ImageButton' && (
+        <>
+          <Row label="Hover image" title="HoverImage: shown while the mouse is over it"><TextField value={p.HoverImage ?? ''} onChange={set('HoverImage')} placeholder="rbxassetid://…" /></Row>
+          <Row label="Pressed image" title="PressedImage: shown while it's held down"><TextField value={p.PressedImage ?? ''} onChange={set('PressedImage')} placeholder="rbxassetid://…" /></Row>
+        </>
+      )}
+      {node.className === 'ImageButton' && <Row label="Button"><div className="flags"><Toggle value={p.AutoButtonColor} onChange={set('AutoButtonColor')} label="AutoButtonColor" /><Toggle value={!!p.Modal} onChange={set('Modal')} label="Modal" /></div></Row>}
     </Section>
   );
 }
@@ -590,7 +644,7 @@ function ModifierCard({ node, ids, standalone }: { node: GuiNode; ids: string[];
   const [open, setOpen] = useState(true);
   const update = useStore((s) => s.update);
   const enabled = node.props.Enabled !== false;
-  const defs = CLASS_PROPS[node.className].filter((d) => d.name !== 'Enabled');
+  const defs = CLASS_PROPS[node.className].filter((d) => d.name !== 'Enabled' && !d.optional);
   const body = (
     <div className="mod-body">
       {defs.map((d) => (
@@ -598,6 +652,9 @@ function ModifierCard({ node, ids, standalone }: { node: GuiNode; ids: string[];
           <PropEditor def={d} value={node.props[d.name]} onChange={(v) => setProp(ids, d.name, v)} />
         </Row>
       ))}
+      {node.className === 'UIDragDetector' && <DragBoundsRow node={node} />}
+      {node.className === 'UICorner' && <CornerRadiiRows node={node} ids={ids} />}
+      {node.className === 'UIPageLayout' && <PageRow node={node} />}
     </div>
   );
   if (standalone) return <Section title="Properties">{body}</Section>;
@@ -614,6 +671,83 @@ function ModifierCard({ node, ids, standalone }: { node: GuiNode; ids: string[];
       </div>
       {open && body}
     </div>
+  );
+}
+
+/** UICorner: a different radius per corner (TopLeftRadius… override CornerRadius) */
+function CornerRadiiRows({ node, ids }: { node: GuiNode; ids: string[] }) {
+  const on = CORNER_PROPS.some((k) => node.props[k]);
+  const toggle = (v: boolean) =>
+    useStore.getState().update((d) => {
+      for (const id of ids) {
+        const p = d.nodes[id]?.props;
+        if (!p) continue;
+        for (const k of CORNER_PROPS) {
+          if (v) p[k] = { ...p.CornerRadius };
+          else delete p[k];
+        }
+      }
+    });
+  const labels: Record<(typeof CORNER_PROPS)[number], string> = { TopLeftRadius: 'Top left', TopRightRadius: 'Top right', BottomRightRadius: 'Bottom right', BottomLeftRadius: 'Bottom left' };
+  return (
+    <>
+      <Row label="">
+        <Toggle value={on} onChange={toggle} label="Individual corners" />
+      </Row>
+      {on && CORNER_PROPS.map((k) => (
+        <Row key={k} label={labels[k]} title={k}>
+          <UDimField value={node.props[k] ?? node.props.CornerRadius} onChange={(v) => setProp(ids, k, v)} />
+        </Row>
+      ))}
+    </>
+  );
+}
+
+/** UIPageLayout: which page the editor shows (Preview / the game start on the first) */
+function PageRow({ node }: { node: GuiNode }) {
+  const doc = useStore((s) => s.doc);
+  const frame = node.parentId ? doc.nodes[node.parentId] : undefined;
+  const count = frame ? frame.children.filter((c) => doc.nodes[c] && isGuiObject(doc.nodes[c].className) && doc.nodes[c].props.Visible !== false).length : 0;
+  const page = Math.min(Math.max(0, node.page ?? 0), Math.max(0, count - 1));
+  const go = (p: number) => useStore.getState().update((d) => void (d.nodes[node.id].page = Math.max(0, Math.min(count - 1, p))));
+  return (
+    <>
+      <Row label="Showing" title="Page shown in the editor (not exported — the game starts on the first page)">
+        <div className="page-nav">
+          <button className="btn tiny" disabled={page <= 0} onClick={() => go(page - 1)}>‹</button>
+          <span>{count ? `Page ${page + 1} of ${count}` : 'No pages yet'}</span>
+          <button className="btn tiny" disabled={page >= count - 1} onClick={() => go(page + 1)}>›</button>
+        </div>
+      </Row>
+      <div className="hint">Each child of {frame?.name ?? 'the frame'} is a page. Turn pages with events (Next page / Previous page / Go to page) — or the scroll wheel in Preview.</div>
+    </>
+  );
+}
+
+/** UIDragDetector.BoundingUI: the element the dragged one has to stay inside */
+function DragBoundsRow({ node }: { node: GuiNode }) {
+  const doc = useStore((s) => s.doc);
+  const dragged = node.parentId;
+  const options = targetOptions(doc).filter((o) => o.id !== dragged);
+  const parent = dragged ? doc.nodes[dragged]?.parentId : null;
+  return (
+    <>
+      <Row label="BoundingUI" title="The element it has to stay inside while dragged (set by the behaviour script)">
+        <select
+          className="event-select"
+          value={node.boundingUI ?? ''}
+          onChange={(e) => useStore.getState().update((d) => {
+            const n = d.nodes[node.id];
+            if (e.target.value) n.boundingUI = e.target.value;
+            else delete n.boundingUI;
+          })}
+        >
+          <option value="">None — can go anywhere</option>
+          {options.map((o) => <option key={o.id} value={o.id}>{o.label}{o.id === parent ? '  (its parent)' : ''}</option>)}
+        </select>
+      </Row>
+      <div className="hint">Drag it in Preview (Ctrl+P). TranslateLine follows DragAxis; Rotate turns it; Min/Max limits apply when Max is bigger than Min.</div>
+    </>
   );
 }
 
@@ -687,6 +821,24 @@ function TweenInspector({ tween }: { tween: Tween }) {
       <Row label="Target">
         <PropEditor def={def} value={tween.to} onChange={(v) => updateTween(tween.id, { to: v })} />
       </Row>
+    </Section>
+  );
+}
+
+/** Which screen (page of UI) a ScreenGui is on */
+function ScreenSection({ node }: { node: GuiNode }) {
+  const doc = useStore((s) => s.doc);
+  const screens = screensOf(doc);
+  const screen = screenOfRoot(doc, node.id);
+  return (
+    <Section title="Screen">
+      <Row label="On screen" title="Each screen has its own artboard; add screens in Layers">
+        <SelectField value={screen.id} options={screens.map((s) => [s.id, s.name] as [string, string])} onChange={(v) => moveRootToScreen(node.id, v)} />
+      </Row>
+      <Row label="">
+        <Toggle value={screenStartsVisible(doc, screen)} onChange={(v) => setScreenStart(screen.id, v)} label={`"${screen.name}" is shown when the game starts`} />
+      </Row>
+      {screens.length < 2 && <div className="hint">Make more pages of UI (shop, settings…) with + next to Screens in Layers, then switch between them with the Show screen event.</div>}
     </Section>
   );
 }

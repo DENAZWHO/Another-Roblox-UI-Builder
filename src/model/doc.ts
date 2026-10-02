@@ -137,6 +137,12 @@ export function insertFragment(doc: Doc, frag: Fragment, parentId: string | null
     copy.parentId = n.parentId && map.has(n.parentId) ? map.get(n.parentId)! : null;
     // references to elements inside the copy follow the copy; references to anything else are kept
     if (copy.toast?.triggerNodeId && map.has(copy.toast.triggerNodeId)) copy.toast.triggerNodeId = map.get(copy.toast.triggerNodeId);
+    if (copy.boundingUI && map.has(copy.boundingUI)) copy.boundingUI = map.get(copy.boundingUI);
+    if (copy.nav) for (const k of Object.keys(copy.nav) as (keyof NonNullable<GuiNode['nav']>)[]) if (copy.nav[k] && map.has(copy.nav[k]!)) copy.nav[k] = map.get(copy.nav[k]!);
+    copy.events?.forEach((h) => h.actions.forEach((a) => {
+      if (a.target && map.has(a.target)) a.target = map.get(a.target);
+      if (a.toastId && map.has(a.toastId)) a.toastId = map.get(a.toastId);
+    }));
     doc.nodes[copy.id] = copy;
   }
   const roots = frag.rootIds.map((r) => map.get(r)!);
@@ -166,9 +172,11 @@ export function rectToProps(props: Record<string, any>, rect: Rect, content: Rec
   const pos: UDim2 = props.Position;
   const size: UDim2 = props.Size;
   const a: Vec2 = props.AnchorPoint ?? { x: 0, y: 0 };
+  // SizeConstraint: RelativeXX measures both Scale parts against the parent's width, RelativeYY against its height
+  const sc: string = props.SizeConstraint ?? 'RelativeXY';
   const Size = {
-    x: solveAxis(size.x, rect.w, content.w, units, force),
-    y: solveAxis(size.y, rect.h, content.h, units, force),
+    x: solveAxis(size.x, rect.w, sc === 'RelativeYY' ? content.h : content.w, units, force),
+    y: solveAxis(size.y, rect.h, sc === 'RelativeXX' ? content.w : content.h, units, force),
   };
   const Position = {
     x: solveAxis(pos.x, rect.x + a.x * rect.w - content.x, content.w, units, force),

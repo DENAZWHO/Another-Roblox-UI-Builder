@@ -3,7 +3,7 @@ import { produce, type Draft } from 'immer';
 import type { Doc, GuiObjectClass } from './model/types';
 import type { Units } from './model/doc';
 
-export type Tool = 'move' | 'hand' | GuiObjectClass;
+export type Tool = 'move' | 'hand' | 'pen' | GuiObjectClass;
 export type Mode = 'design' | 'animate';
 export type Dialog = null | 'export' | 'preview' | 'shortcuts' | 'studio';
 
