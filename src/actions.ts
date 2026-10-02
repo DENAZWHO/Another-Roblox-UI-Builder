@@ -7,7 +7,7 @@ import {
   topLevelOnly, uid, unionRect, identifier, type Fragment, type Units,
 } from './model/doc';
 import {
-  ANIMATABLE_PROPS, CONTAINER_CLASSES, hasProp, isGuiObject, isModifier, isRoot, isText, isWorldGui, modifierAllowed, SINGLETON_MODIFIERS, LAYOUT_CLASSES, CORNER_PROPS,
+  ANIMATABLE_PROPS, CONTAINER_CLASSES, hasProp, isGuiObject, isModifier, isRoot, isText, isWorldGui, modifierAllowed, SINGLETON_MODIFIERS, LAYOUT_CLASSES, CORNER_PROPS, CLASS_PROPS,
 } from './model/schema';
 import type { AnimClip, ClassName, Doc, Effect, EffectKind, GuiNode, ModifierClass, Rect, RootClass, TriggerKind, Tween, UDim } from './model/types';
 import { EFFECTS } from './model/effects';
@@ -1277,4 +1277,148 @@ export function resetOverrides(rootId: string) {
     };
     walk(rootId);
   });
+}
+
+// ---------------------------------------------------------------------------
+// Shared styles
+
+function ensureStyles(d: Draft<Doc>) {
+  d.styles ??= { colors: [], texts: [] };
+  return d.styles;
+}
+
+/** A new colour style; optionally links the given properties to it */
+export function createColorStyle(color: string, name?: string, link?: { ids: string[]; prop: string }): string {
+  const id = uid();
+  S().update((d) => {
+    const st = ensureStyles(d);
+    const names = new Set(st.colors.map((c) => c.name));
+    let n = name ?? `Color ${st.colors.length + 1}`;
+    for (let i = 2; names.has(n); i++) n = `${name ?? 'Color'} ${i}`;
+    st.colors.push({ id, name: n, color });
+    if (link) for (const nid of link.ids) if (d.nodes[nid]) d.nodes[nid].styleRefs = { ...(d.nodes[nid].styleRefs ?? {}), [link.prop]: id };
+  });
+  return id;
+}
+
+export function updateColorStyle(id: string, patch: { name?: string; color?: string }, coalesce?: string) {
+  S().update((d) => {
+    const s = d.styles?.colors.find((c) => c.id === id);
+    if (s) Object.assign(s, patch);
+  }, coalesce ? { coalesce: coalesce + id } : undefined);
+}
+
+/** Link properties to a style (or unlink with null) */
+export function linkStyle(ids: string[], prop: string, styleId: string | null) {
+  S().update((d) => {
+    for (const nid of ids) {
+      const n = d.nodes[nid];
+      if (!n) continue;
+      const refs = { ...(n.styleRefs ?? {}) };
+      if (styleId) refs[prop] = styleId;
+      else delete refs[prop];
+      if (Object.keys(refs).length) n.styleRefs = refs;
+      else delete n.styleRefs;
+    }
+  });
+}
+
+/** Delete a style (linked properties keep their current values) */
+export function deleteStyle(id: string) {
+  S().update((d) => {
+    if (!d.styles) return;
+    d.styles.colors = d.styles.colors.filter((c) => c.id !== id);
+    d.styles.texts = d.styles.texts.filter((c) => c.id !== id);
+  });
+}
+
+/** A new text style from a text element's font, size and line height (and link it) */
+export function createTextStyle(fromId: string | null, name?: string): string {
+  const id = uid();
+  // read from the saved document (not the draft) so the font can be copied
+  const from = fromId ? S().doc.nodes[fromId] : undefined;
+  S().update((d) => {
+    const st = ensureStyles(d);
+    const names = new Set(st.texts.map((c) => c.name));
+    let n = name ?? `Text ${st.texts.length + 1}`;
+    for (let i = 2; names.has(n); i++) n = `${name ?? 'Text'} ${i}`;
+    st.texts.push({
+      id, name: n,
+      font: structuredClone(from?.props.FontFace ?? { family: 'BuilderSans', weight: 700, style: 'Normal' }),
+      size: from?.props.TextSize ?? 24,
+      lineHeight: from?.props.LineHeight ?? 1,
+    });
+    const src = fromId ? d.nodes[fromId] : undefined;
+    if (src) src.styleRefs = { ...(src.styleRefs ?? {}), __text: id };
+  });
+  return id;
+}
+
+export function updateTextStyle(id: string, patch: Partial<{ name: string; font: any; size: number; lineHeight: number }>, coalesce?: string) {
+  S().update((d) => {
+    const s = d.styles?.texts.find((c) => c.id === id);
+    if (s) Object.assign(s, patch);
+  }, coalesce ? { coalesce: coalesce + id } : undefined);
+}
+
+/**
+ * Turn the document's most used colours into styles and link every property using them.
+ * Returns how many styles were made.
+ */
+export function stylesFromDocument(max = 8): number {
+  const { doc } = S();
+  const counts = new Map<string, number>();
+  for (const n of Object.values(doc.nodes)) {
+    for (const def of CLASS_PROPS[n.className]) {
+      const v = n.props[def.name];
+      if (def.type !== 'Color3' || typeof v !== 'string' || n.styleRefs?.[def.name] || !visibleColor(n, def.name, def.default)) continue;
+      counts.set(v.toLowerCase(), (counts.get(v.toLowerCase()) ?? 0) + 1);
+    }
+  }
+  const taken = new Set((doc.styles?.colors ?? []).map((c) => c.color.toLowerCase()));
+  const top = [...counts.entries()].filter(([c, k]) => k >= 2 && !taken.has(c)).sort((a, b) => b[1] - a[1]).slice(0, max).map(([c]) => c);
+  if (!top.length) return 0;
+  S().update((d) => {
+    const st = ensureStyles(d);
+    const made = top.map((color, i) => {
+      const s = { id: uid(), name: colorName(color, i), color };
+      st.colors.push(s);
+      return s;
+    });
+    for (const n of Object.values(d.nodes)) {
+      for (const def of CLASS_PROPS[n.className]) {
+        const v = n.props[def.name];
+        if (def.type !== 'Color3' || typeof v !== 'string' || n.styleRefs?.[def.name] || !visibleColor(n as GuiNode, def.name, def.default)) continue;
+        const s = made.find((m) => m.color === v.toLowerCase());
+        if (s) n.styleRefs = { ...(n.styleRefs ?? {}), [def.name]: s.id };
+      }
+    }
+  });
+  return top.length;
+}
+
+/** A colour someone chose and can see (not a default, not on something invisible) */
+function visibleColor(n: GuiNode, prop: string, def: unknown): boolean {
+  const p = n.props;
+  const v = String(p[prop]).toLowerCase();
+  if (v === String(def).toLowerCase()) return false;
+  if (prop === 'BackgroundColor3') return (p.BackgroundTransparency ?? 0) < 1;
+  if (prop === 'BorderColor3') return (p.BorderSizePixel ?? 0) > 0 && (p.BackgroundTransparency ?? 0) < 1;
+  if (prop === 'TextStrokeColor3') return (p.TextStrokeTransparency ?? 1) < 1;
+  if (prop === 'ImageColor3') return v !== '#ffffff';
+  if (prop === 'Color' && n.className === 'UIStroke') return (p.Transparency ?? 0) < 1;
+  return true;
+}
+
+/** A readable name for a colour (White, Black, Red…, else its hex) */
+export function colorName(hex: string, i: number): string {
+  const v = parseInt(hex.slice(1), 16);
+  const [r, g, b] = [(v >> 16) & 255, (v >> 8) & 255, v & 255];
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  if (max - min < 16) return max > 230 ? 'White' : max < 30 ? 'Black' : max > 140 ? 'Light gray' : 'Dark gray';
+  const h = max === r ? ((g - b) / (max - min) + 6) % 6 : max === g ? (b - r) / (max - min) + 2 : (r - g) / (max - min) + 4;
+  const names = ['Red', 'Orange', 'Yellow', 'Lime', 'Green', 'Teal', 'Cyan', 'Sky', 'Blue', 'Indigo', 'Purple', 'Pink'];
+  const base = names[Math.floor(((h * 60 + 15) % 360) / 30)];
+  return (max < 110 ? 'Dark ' : '') + base || `Color ${i + 1}`;
 }

@@ -144,7 +144,7 @@ export function Vec2Field({ value, onChange, step = 1, labels = ['X', 'Y'] }: { 
   );
 }
 
-export function ColorField({ value, onChange, transparency, onTransparency }: { value: string; onChange: (v: string) => void; transparency?: number; onTransparency?: (v: number) => void }) {
+export function ColorField({ value, onChange, transparency, onTransparency, after }: { value: string; onChange: (v: string) => void; transparency?: number; onTransparency?: (v: number) => void; after?: ReactNode }) {
   const [hex, setHex] = useState(value.slice(1).toUpperCase());
   const [anchor, setAnchor] = useState<DOMRect | null>(null);
   useEffect(() => setHex(value.slice(1).toUpperCase()), [value]);
@@ -169,6 +169,7 @@ export function ColorField({ value, onChange, transparency, onTransparency }: { 
       {onTransparency && (
         <NumberField className="nf-t" label="T" title="Transparency (0 = opaque, 1 = invisible)" value={transparency ?? 0} step={0.05} min={0} max={1} precision={2} onChange={onTransparency} />
       )}
+      {after}
     </div>
   );
 }

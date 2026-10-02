@@ -138,6 +138,8 @@ export interface GuiNode {
   screen?: string;
   /** Path2D: control points (set with SetControlPoints) */
   points?: PathPoint[];
+  /** Shared styles this element's properties are linked to: { BackgroundColor3: colourStyleId, __text: textStyleId } */
+  styleRefs?: Record<string, string>;
   /** Linked components: this element is a main component */
   component?: { createdAt?: number };
   /** …this element is an instance of that main component (its root) */
@@ -249,6 +251,24 @@ export interface Doc {
   references?: RefImage[];
   /** Screens (pages of UI), each with its own artboard; unset = one "Main" screen */
   screens?: Screen[];
+  /** Shared colour and text styles */
+  styles?: { colors: ColorStyle[]; texts: TextStyle[] };
+}
+
+/** A named colour elements can link to */
+export interface ColorStyle {
+  id: string;
+  name: string;
+  color: string;
+}
+
+/** A named font + size + line height text elements can link to */
+export interface TextStyle {
+  id: string;
+  name: string;
+  font: FontValue;
+  size: number;
+  lineHeight?: number;
 }
 
 /** A page of UI (main menu, shop…): its ScreenGuis are drawn on their own artboard */

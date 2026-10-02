@@ -15,6 +15,7 @@ import { ClassIcon } from './icons';
 import { RichColorEditor } from './RichColorEditor';
 import { ReferenceProps } from './References';
 import { EventsSection } from './EventsPanel';
+import { ColorStyleButton, TextStyleRow } from './StylesPanel';
 import { pickAndUploadImage } from '../upload';
 import { GamepadSection } from './GamepadPanel';
 import { PathSection } from './PathTool';
@@ -177,14 +178,14 @@ function GenericProps({ ids, node, only }: { ids: string[]; node: GuiNode; only?
     <Section title="Properties">
       {defs.map((d) => (
         <Row key={d.name} label={d.name} title={d.name} stack={d.type === 'ColorSequence' || d.type === 'NumberSequence'}>
-          <PropEditor def={d} value={node.props[d.name]} onChange={(v) => setProp(ids, d.name, v)} />
+          <PropEditor def={d} value={node.props[d.name]} onChange={(v) => setProp(ids, d.name, v)} bind={{ ids }} />
         </Row>
       ))}
     </Section>
   );
 }
 
-export function PropEditor({ def, value, onChange }: { def: PropDef; value: any; onChange: (v: any) => void }) {
+export function PropEditor({ def, value, onChange, bind }: { def: PropDef; value: any; onChange: (v: any) => void; bind?: { ids: string[] } }) {
   switch (def.type) {
     case 'UDim2':
       return <UDim2Field value={value} onChange={onChange} />;
@@ -206,7 +207,7 @@ export function PropEditor({ def, value, onChange }: { def: PropDef; value: any;
     case 'bool':
       return <Toggle value={value} onChange={onChange} />;
     case 'Color3':
-      return <ColorField value={value} onChange={onChange} />;
+      return <ColorField value={value} onChange={onChange} after={bind ? <ColorStyleButton ids={bind.ids} prop={def.name} value={value} /> : undefined} />;
     case 'string':
       return <TextField value={value} onChange={onChange} multiline={def.multiline} />;
     case 'Content':
@@ -432,12 +433,12 @@ function GuiObjectProps({ ids, node, nodes }: { ids: string[]; node: GuiNode; no
 
       <Section title="Background">
         <Row label={L('BackgroundColor3', 'Color')}>
-          <ColorField value={p.BackgroundColor3} onChange={set('BackgroundColor3')} transparency={p.BackgroundTransparency} onTransparency={set('BackgroundTransparency')} />
+          <ColorField value={p.BackgroundColor3} onChange={set('BackgroundColor3')} after={<ColorStyleButton ids={ids} prop="BackgroundColor3" value={p.BackgroundColor3} />} transparency={p.BackgroundTransparency} onTransparency={set('BackgroundTransparency')} />
         </Row>
         <Row label="Border">
           <div className="pair border-pair">
             <NumberField label="px" title="BorderSizePixel" value={p.BorderSizePixel} min={0} precision={0} onChange={(v) => set('BorderSizePixel')(Math.round(v))} />
-            <ColorField value={p.BorderColor3} onChange={set('BorderColor3')} />
+            <ColorField value={p.BorderColor3} onChange={set('BorderColor3')} after={<ColorStyleButton ids={ids} prop="BorderColor3" value={p.BorderColor3} />} />
           </div>
         </Row>
         {p.BorderSizePixel > 0 && (
@@ -457,7 +458,7 @@ function GuiObjectProps({ ids, node, nodes }: { ids: string[]; node: GuiNode; no
           {cls === 'TextBox' && (
             <>
               <Row label="Placeholder"><TextField value={p.PlaceholderText} onChange={set('PlaceholderText')} /></Row>
-              <Row label="Placeholder color"><ColorField value={p.PlaceholderColor3} onChange={set('PlaceholderColor3')} /></Row>
+              <Row label="Placeholder color"><ColorField value={p.PlaceholderColor3} onChange={set('PlaceholderColor3')} after={<ColorStyleButton ids={ids} prop="PlaceholderColor3" value={p.PlaceholderColor3} />} /></Row>
             </>
           )}
           <Row label="Font"><FontEditor value={p.FontFace} onChange={set('FontFace')} /></Row>
@@ -473,7 +474,7 @@ function GuiObjectProps({ ids, node, nodes }: { ids: string[]; node: GuiNode; no
             </Row>
           ) : (
             <Row label={L('TextColor3', 'Color')} title="Turn on RichText for multi-colour text">
-              <ColorField value={p.TextColor3} onChange={set('TextColor3')} transparency={p.TextTransparency} onTransparency={set('TextTransparency')} />
+              <ColorField value={p.TextColor3} onChange={set('TextColor3')} after={<ColorStyleButton ids={ids} prop="TextColor3" value={p.TextColor3} />} transparency={p.TextTransparency} onTransparency={set('TextTransparency')} />
             </Row>
           )}
           <Row label="Align">
@@ -504,6 +505,7 @@ function GuiObjectProps({ ids, node, nodes }: { ids: string[]; node: GuiNode; no
               <Toggle value={p.RichText} onChange={set('RichText')} label="RichText" />
             </div>
           </Row>
+          <TextStyleRow ids={ids} />
           <Row label="LineHeight"><NumberField value={p.LineHeight} step={0.1} min={0.5} max={3} precision={2} onChange={set('LineHeight')} label="" /></Row>
           <Row label="Truncate" title="TextTruncate: end with … when the text doesn't fit">
             <SelectField value={p.TextTruncate ?? 'None'} options={[['None', 'None'], ['AtEnd', 'At end …'], ['SplitWord', 'Split word …']]} onChange={set('TextTruncate')} />
@@ -515,7 +517,7 @@ function GuiObjectProps({ ids, node, nodes }: { ids: string[]; node: GuiNode; no
             <Segmented value={(p.TextDirection ?? 'Auto') as string} options={[{ value: 'Auto', label: 'Auto' }, { value: 'LeftToRight', label: 'LTR' }, { value: 'RightToLeft', label: 'RTL' }]} onChange={set('TextDirection')} />
           </Row>
           <Row label="Text stroke" title="Legacy TextStroke (UIStroke is recommended)">
-            <ColorField value={p.TextStrokeColor3} onChange={set('TextStrokeColor3')} transparency={p.TextStrokeTransparency} onTransparency={set('TextStrokeTransparency')} />
+            <ColorField value={p.TextStrokeColor3} onChange={set('TextStrokeColor3')} after={<ColorStyleButton ids={ids} prop="TextStrokeColor3" value={p.TextStrokeColor3} />} transparency={p.TextStrokeTransparency} onTransparency={set('TextStrokeTransparency')} />
           </Row>
           {cls === 'TextBox' && (
             <Row label="Behaviour">
@@ -591,7 +593,7 @@ function ImageSection({ ids, node, set }: { ids: string[]; node: GuiNode; set: (
           {node.preview && <button className="btn small" onClick={() => update((d) => ids.forEach((id) => delete d.nodes[id].preview))}><X size={12} /> Clear</button>}
         </div>
       </Row>
-      <Row label="Tint"><ColorField value={p.ImageColor3} onChange={set('ImageColor3')} transparency={p.ImageTransparency} onTransparency={set('ImageTransparency')} /></Row>
+      <Row label="Tint"><ColorField value={p.ImageColor3} onChange={set('ImageColor3')} after={<ColorStyleButton ids={ids} prop="ImageColor3" value={p.ImageColor3} />} transparency={p.ImageTransparency} onTransparency={set('ImageTransparency')} /></Row>
       <Row label="ScaleType"><SelectField value={p.ScaleType} options={Object.keys(ENUMS.ScaleType)} onChange={set('ScaleType')} /></Row>
       {p.ScaleType === 'Slice' && (
         <>
@@ -651,7 +653,7 @@ function ModifierCard({ node, ids, standalone }: { node: GuiNode; ids: string[];
     <div className="mod-body">
       {defs.map((d) => (
         <Row key={d.name} label={d.name} title={d.name} stack={d.type === 'ColorSequence' || d.type === 'NumberSequence'}>
-          <PropEditor def={d} value={node.props[d.name]} onChange={(v) => setProp(ids, d.name, v)} />
+          <PropEditor def={d} value={node.props[d.name]} onChange={(v) => setProp(ids, d.name, v)} bind={{ ids }} />
         </Row>
       ))}
       {node.className === 'UIDragDetector' && <DragBoundsRow node={node} />}

@@ -3,6 +3,7 @@ import { produce, type Draft } from 'immer';
 import type { Doc, GuiObjectClass } from './model/types';
 import type { Units } from './model/doc';
 import { finalizeComponents } from './model/components';
+import { finalizeStyles } from './model/styles';
 
 export type Tool = 'move' | 'hand' | 'pen' | GuiObjectClass;
 export type Mode = 'design' | 'animate';
@@ -35,7 +36,7 @@ export interface State {
   selectedTweenId: string | null;
   collapsed: Record<string, boolean>;
   editingTextId: string | null;
-  leftTab: 'layers' | 'insert';
+  leftTab: 'layers' | 'insert' | 'styles';
   dialog: Dialog;
   toast: { text: string; id: number } | null;
   menu: { x: number; y: number } | null;
@@ -84,7 +85,9 @@ export const useStore = create<State>()((set, get) => ({
 
   update: (recipe, opts) => {
     const s = get();
-    const next = finalizeComponents(s.doc, produce(s.doc, recipe));
+    const draftDone = produce(s.doc, recipe);
+    // instances follow their main component, then linked properties follow their styles
+    const next = finalizeStyles(s.doc, finalizeComponents(s.doc, draftDone));
     if (next === s.doc) return;
     if (s.gestureBase) {
       set({ doc: next });

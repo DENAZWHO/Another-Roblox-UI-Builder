@@ -95,6 +95,14 @@ function syncNode(d: Draft<Doc>, id: string, mainId: string, isRoot: boolean) {
     if ((isRoot && INSTANCE_LOCAL.has(k)) || keep.has(k)) continue;
     if (!same(n.props[k], m.props[k])) n.props[k] = structuredClone(m.props[k]);
   }
+  // style links follow the main's, except for properties this instance overrides
+  const refs: Record<string, string> = {};
+  for (const [k, v] of Object.entries(m.styleRefs ?? {})) if (!keep.has(k) && !(isRoot && INSTANCE_LOCAL.has(k))) refs[k] = v;
+  for (const [k, v] of Object.entries(n.styleRefs ?? {})) if (keep.has(k)) refs[k] = v;
+  if (!same(refs, n.styleRefs ?? {})) {
+    if (Object.keys(refs).length) n.styleRefs = refs;
+    else delete n.styleRefs;
+  }
   // behaviour that isn't per-property follows the main too (unless it's the instance root's own)
   for (const k of ['effects', 'avatar', 'bind', 'textColors', 'points', 'preview'] as const) {
     if (!same((n as any)[k], (m as any)[k])) (n as any)[k] = structuredClone((m as any)[k]);

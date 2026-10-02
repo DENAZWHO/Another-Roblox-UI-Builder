@@ -14,6 +14,7 @@ import { PREFAB_DRAG_TYPE, PrefabsSection } from './PrefabsPanel';
 import { prefabs } from '../model/prefabs';
 import { elementFragment, modifierProblem, startDragPreview, startModifierDrag } from './DragPreview';
 import { ReferencesSection } from './References';
+import { StylesTab } from './StylesPanel';
 
 export function LeftPanel() {
   const tab = useStore((s) => s.leftTab);
@@ -22,8 +23,9 @@ export function LeftPanel() {
       <div className="tabs">
         <button className={tab === 'layers' ? 'on' : ''} onClick={() => useStore.setState({ leftTab: 'layers' })}>Layers</button>
         <button className={tab === 'insert' ? 'on' : ''} onClick={() => useStore.setState({ leftTab: 'insert' })}>Insert</button>
+        <button className={tab === 'styles' ? 'on' : ''} onClick={() => useStore.setState({ leftTab: 'styles' })}>Styles</button>
       </div>
-      {tab === 'layers' ? <Layers /> : <InsertPanel />}
+      {tab === 'layers' ? <Layers /> : tab === 'insert' ? <InsertPanel /> : <StylesTab />}
     </aside>
   );
 }
