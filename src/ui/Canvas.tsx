@@ -8,6 +8,7 @@ import { applyPixelScale, pixelScaleFactor } from '../model/pixelScale';
 import type { GuiNode, Rect } from '../model/types';
 import { insertNode, moveIntoFrame, patchNodes, reorderInStack, stackOrder, placeNodes, setCornerRadius, setProp, setProps } from '../actions';
 import { DeviceCutouts, ScreenView, TopbarMock, type RenderCtx } from './render';
+import { CheckMarks } from './ChecksPanel';
 import { RefLayer, RefSelectionBox, dragReference } from './References';
 import { QuickBar } from './QuickBar';
 import { PathEditor, penDown, startPathMove } from './PathTool';
@@ -35,6 +36,7 @@ export function Canvas() {
   const doc = useStore((s) => s.doc);
   const selection = useStore((s) => s.selection);
   const hoverId = useStore((s) => s.hoverId);
+  const leftTab = useStore((s) => s.leftTab);
   const tool = useStore((s) => s.tool);
   const zoom = useStore((s) => s.zoom);
   const pan = useStore((s) => s.pan);
@@ -779,6 +781,7 @@ export function Canvas() {
         {selWorld.map((id) => layout.artboards[id] && <div key={'w' + id} className="sel-box screen" style={toRectStyle(toScreen(layout.artboards[id]))} />)}
         {selScreens.map((id) => <div key={'s' + id} className="sel-box screen" style={toRectStyle(toScreen(screenBox(doc, screenOfRoot(doc, id).id)))} />)}
         {selModParents.map((id) => boxStyle(id) && <div key={'m' + id} className="sel-box modparent" style={boxStyle(id)!} />)}
+        {leftTab === 'checks' && <CheckMarks boxStyle={boxStyle} />}
         {hoverId && !selection.includes(hoverId) && boxStyle(hoverId) && <div className="hover-box" style={boxStyle(hoverId)!} />}
         {single && nodes[single].parentId && !isRoot(nodes[nodes[single].parentId!]?.className) && layout.content[nodes[single].parentId!] && (
           <div className="parent-box" style={{ ...toRectStyle(toScreen(layout.content[nodes[single].parentId!])) }} />

@@ -15,6 +15,14 @@ import { prefabs } from '../model/prefabs';
 import { elementFragment, modifierProblem, startDragPreview, startModifierDrag } from './DragPreview';
 import { ReferencesSection } from './References';
 import { StylesTab } from './StylesPanel';
+import { ChecksTab, useCheckIssues } from './ChecksPanel';
+
+function ChecksBadge() {
+  const issues = useCheckIssues();
+  if (!issues.length) return null;
+  const errors = issues.some((i) => i.severity === 'error');
+  return <span className={`tab-badge ${errors ? 'error' : 'warn'}`}>{issues.length}</span>;
+}
 
 export function LeftPanel() {
   const tab = useStore((s) => s.leftTab);
@@ -24,8 +32,11 @@ export function LeftPanel() {
         <button className={tab === 'layers' ? 'on' : ''} onClick={() => useStore.setState({ leftTab: 'layers' })}>Layers</button>
         <button className={tab === 'insert' ? 'on' : ''} onClick={() => useStore.setState({ leftTab: 'insert' })}>Insert</button>
         <button className={tab === 'styles' ? 'on' : ''} onClick={() => useStore.setState({ leftTab: 'styles' })}>Styles</button>
+        <button className={tab === 'checks' ? 'on' : ''} title="Accessibility checks: tap targets, contrast, text size" onClick={() => useStore.setState({ leftTab: 'checks' })}>
+          Checks<ChecksBadge />
+        </button>
       </div>
-      {tab === 'layers' ? <Layers /> : tab === 'insert' ? <InsertPanel /> : <StylesTab />}
+      {tab === 'layers' ? <Layers /> : tab === 'insert' ? <InsertPanel /> : tab === 'styles' ? <StylesTab /> : <ChecksTab />}
     </aside>
   );
 }

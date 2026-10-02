@@ -2,9 +2,7 @@
 // don't overflow the localStorage autosave; the document only stores an image id.
 import { useSyncExternalStore } from 'react';
 import { uid } from './doc';
-
-const DB_NAME = 'rbx-ui-builder';
-const STORE = 'refImages';
+import { idb } from './idb';
 
 const cache = new Map<string, string>();
 const requested = new Set<string>();
@@ -12,27 +10,7 @@ const listeners = new Set<() => void>();
 const emit = () => listeners.forEach((l) => l());
 const subscribe = (l: () => void) => (listeners.add(l), () => void listeners.delete(l));
 
-let dbPromise: Promise<IDBDatabase> | null = null;
-function db(): Promise<IDBDatabase> {
-  dbPromise ??= new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, 1);
-    req.onupgradeneeded = () => req.result.createObjectStore(STORE);
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
-  return dbPromise;
-}
-
-function tx<T>(mode: IDBTransactionMode, run: (s: IDBObjectStore) => IDBRequest<T>): Promise<T> {
-  return db().then(
-    (d) =>
-      new Promise<T>((resolve, reject) => {
-        const req = run(d.transaction(STORE, mode).objectStore(STORE));
-        req.onsuccess = () => resolve(req.result);
-        req.onerror = () => reject(req.error);
-      }),
-  );
-}
+const tx = <T,>(mode: IDBTransactionMode, run: (s: IDBObjectStore) => IDBRequest<T>) => idb<T>('refImages', mode, run);
 
 /** Data URL of an image (undefined while loading / missing) */
 export const refImageSrc = (id: string) => cache.get(id);
@@ -54,6 +32,16 @@ export function loadRefImages(ids: string[]) {
         }
       })
       .catch(() => {});
+  }
+}
+
+/** An image's data URL, read from IndexedDB if it isn't loaded */
+export async function refImageData(id: string): Promise<string | undefined> {
+  if (cache.has(id)) return cache.get(id);
+  try {
+    return await tx<string | undefined>('readonly', (s) => s.get(id));
+  } catch {
+    return undefined;
   }
 }
 

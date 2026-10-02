@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { ChevronDown, Code, Hand, Keyboard, MousePointer2, PenTool, Pipette, Play, Redo2, Undo2, Cable, Menu, UserRound } from 'lucide-react';
+import { ChevronDown, Code, Hand, Keyboard, MousePointer2, PenTool, Pipette, Play, Redo2, Undo2, Cable, Folder, Menu, UserRound } from 'lucide-react';
 import { pickColorForSelection } from './QuickBar';
 import { insertFragmentAt, insertionParent } from '../actions';
 import { PRESETS } from '../model/presets';
@@ -114,6 +114,7 @@ export function Toolbar() {
   const canUndo = useStore((s) => s.past.length > 0);
   const canRedo = useStore((s) => s.future.length > 0);
   const liveSync = useStore((s) => s.liveSync);
+  const project = useStore((s) => s.project);
   const sync = useSyncStatus();
   const setTool = (t: Tool) => useStore.setState({ tool: t });
 
@@ -130,9 +131,11 @@ export function Toolbar() {
         >
           {(close) => (
             <>
-              <MenuItem label="New document" onClick={() => { close(); newDocument(); }} />
-              <MenuItem label="Open project…" shortcut="Ctrl+O" onClick={() => { close(); openProject(); }} />
-              <MenuItem label="Save project" shortcut="Ctrl+S" onClick={() => { close(); saveProject(); }} />
+              <MenuItem label="Projects…" onClick={() => { close(); useStore.setState({ dialog: 'projects' }); }} />
+              <MenuItem label="New project" onClick={() => { close(); newDocument(); }} />
+              <div className="menu-sep" />
+              <MenuItem label="Open project file…" shortcut="Ctrl+O" onClick={() => { close(); openProject(); }} />
+              <MenuItem label="Download project file" shortcut="Ctrl+S" onClick={() => { close(); saveProject(); }} />
               <div className="menu-sep" />
               <MenuItem label="Import from Roblox (.rbxm, .rbxl…)…" onClick={() => { close(); importRbxmx(); }} />
               <MenuItem label="Export…" shortcut="Ctrl+E" onClick={() => { close(); useStore.setState({ dialog: 'export' }); }} />
@@ -165,6 +168,13 @@ export function Toolbar() {
       </div>
 
       <div className="tb-center">
+        {project && (
+          <button className="project-btn" title="Projects — saved in this browser as you work" onClick={() => useStore.setState({ dialog: 'projects' })}>
+            <Folder size={13} />
+            <span>{project.name}</span>
+            <ChevronDown size={10} />
+          </button>
+        )}
         <div className="mode-switch">
           <button className={mode === 'design' ? 'on' : ''} onClick={() => useStore.setState({ mode: 'design', playing: false, selectedTweenId: null })}>Design</button>
           <button className={mode === 'animate' ? 'on' : ''} onClick={() => useStore.setState({ mode: 'animate' })}>Animate</button>

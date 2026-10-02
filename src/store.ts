@@ -7,7 +7,7 @@ import { finalizeStyles } from './model/styles';
 
 export type Tool = 'move' | 'hand' | 'pen' | GuiObjectClass;
 export type Mode = 'design' | 'animate';
-export type Dialog = null | 'export' | 'preview' | 'shortcuts' | 'studio' | 'upload';
+export type Dialog = null | 'export' | 'preview' | 'shortcuts' | 'studio' | 'upload' | 'projects';
 
 interface UpdateOpts {
   /** Consecutive updates with the same key within 800ms merge into one undo step */
@@ -36,12 +36,14 @@ export interface State {
   selectedTweenId: string | null;
   collapsed: Record<string, boolean>;
   editingTextId: string | null;
-  leftTab: 'layers' | 'insert' | 'styles';
+  leftTab: 'layers' | 'insert' | 'styles' | 'checks';
   dialog: Dialog;
   toast: { text: string; id: number } | null;
   menu: { x: number; y: number } | null;
   clipArtboard: boolean;
   liveSync: boolean;
+  /** The open saved project (null until projects load, or without IndexedDB) */
+  project: { id: string; name: string; createdAt: number } | null;
 
   update: (recipe: (d: Draft<Doc>) => void, opts?: UpdateOpts) => void;
   beginGesture: () => void;
@@ -82,6 +84,7 @@ export const useStore = create<State>()((set, get) => ({
   menu: null,
   clipArtboard: true,
   liveSync: false,
+  project: null,
 
   update: (recipe, opts) => {
     const s = get();

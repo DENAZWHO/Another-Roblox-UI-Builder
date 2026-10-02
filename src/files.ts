@@ -4,7 +4,8 @@ import { deserialize, emptyDoc, insertFragment, serialize } from './model/doc';
 import { parseRobloxFile } from './export/rbxmx';
 import { insertionParent, batch } from './actions';
 import type { Doc } from './model/types';
-import { loadRefImages, pruneRefImages, putRefImage, refImageSrc } from './model/refImages';
+import { loadRefImages, putRefImage, refImageSrc } from './model/refImages';
+import { createProject } from './projects';
 
 const AUTOSAVE_KEY = 'rbx-ui-builder:doc:v1';
 
@@ -32,8 +33,8 @@ function validDoc(d: any): d is Doc {
 }
 
 export function projectName() {
-  const { doc } = useStore.getState();
-  return doc.nodes[doc.rootIds[0]]?.name ?? 'ui';
+  const { doc, project } = useStore.getState();
+  return (project?.name ?? doc.nodes[doc.rootIds[0]]?.name ?? 'ui').replace(/[\\/:*?"<>|]/g, '_');
 }
 
 /** Project file: the document plus the pictures of its reference images */
@@ -59,16 +60,18 @@ export async function openProject() {
     const doc = data.doc ?? data;
     if (!validDoc(doc)) throw new Error('not a UI Builder project');
     for (const [id, src] of Object.entries((data.refImages ?? {}) as Record<string, string>)) putRefImage(src, id);
-    useStore.getState().loadDoc(doc);
-    useStore.getState().showToast(`Opened ${f.name}`);
+    // opens as a new project, so nothing open is replaced
+    await createProject(doc, f.name.replace(/\.uibuilder\.json$|\.json$/i, ''));
+    useStore.getState().showToast(`Opened ${f.name} as a new project`);
   } catch (e) {
     useStore.getState().showToast(`Could not open file: ${(e as Error).message}`);
   }
 }
 
 export function newDocument() {
-  if (!confirm('Start a new, empty document? Unsaved changes will be lost.')) return;
-  useStore.getState().loadDoc(emptyDoc());
+  // without projects (IndexedDB unavailable) this replaces the open document
+  if (useStore.getState().project) void createProject(emptyDoc());
+  else if (confirm('Start a new, empty document? Unsaved changes will be lost.')) useStore.getState().loadDoc(emptyDoc());
 }
 
 /** Roblox files the importer reads */
@@ -136,12 +139,10 @@ export function startAutosave() {
   });
 }
 
-/** Load reference pictures as documents need them; forget ones nothing uses (once, at startup) */
+/** Load reference pictures as documents need them (unused ones are pruned by startProjects) */
 export function startRefImages() {
   const ids = (d: Doc) => (d.references ?? []).map((r) => r.imageId);
-  const initial = useStore.getState().doc;
-  loadRefImages(ids(initial));
-  pruneRefImages(new Set(ids(initial)));
+  loadRefImages(ids(useStore.getState().doc));
   return useStore.subscribe((s, prev) => {
     if (s.doc.references !== prev.doc.references) loadRefImages(ids(s.doc));
   });

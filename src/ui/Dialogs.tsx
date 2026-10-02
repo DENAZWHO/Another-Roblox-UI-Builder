@@ -21,8 +21,9 @@ import { convertUnits, copySelection, makeResponsive, savePrefabFromSelection, c
 import { screensOf } from '../model/screens';
 import { instanceRootOf } from '../model/components';
 import { goToMain } from './ComponentPanel';
+import { ProjectsDialog } from './ProjectsDialog';
 
-function Modal({ title, children, onClose, wide, footer }: { title: ReactNode; children: ReactNode; onClose: () => void; wide?: boolean; footer?: ReactNode }) {
+export function Modal({ title, children, onClose, wide, footer }: { title: ReactNode; children: ReactNode; onClose: () => void; wide?: boolean; footer?: ReactNode }) {
   useEffect(() => {
     const h = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
     window.addEventListener('keydown', h);
@@ -51,6 +52,7 @@ export function Dialogs() {
   if (dialog === 'shortcuts') return <ShortcutsDialog />;
   if (dialog === 'studio') return <StudioDialog />;
   if (dialog === 'upload') return <UploadDialog />;
+  if (dialog === 'projects') return <ProjectsDialog />;
   return null;
 }
 

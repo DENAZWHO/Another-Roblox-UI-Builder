@@ -3,6 +3,7 @@ import { App } from './ui/App';
 import { useStore } from './store';
 import { loadAutosave, startAutosave, startRefImages } from './files';
 import { demoDoc } from './model/presets';
+import { startProjects } from './projects';
 import { loadWebFonts } from './model/fonts';
 import { startLiveSync, startStudioEdits } from './sync';
 import { loadEyedropper } from './ui/eyedropper';
@@ -10,10 +11,11 @@ import './styles.css';
 
 loadWebFonts();
 loadEyedropper();
-const doc = loadAutosave() ?? demoDoc();
-useStore.getState().loadDoc(doc);
+const autosaved = loadAutosave();
+useStore.getState().loadDoc(autosaved ?? demoDoc());
 startAutosave();
 startRefImages();
+startProjects(!!autosaved);
 startLiveSync();
 startStudioEdits();
 

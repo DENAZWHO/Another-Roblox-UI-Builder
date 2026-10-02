@@ -11,6 +11,7 @@ import {
 } from './model/schema';
 import type { AnimClip, ClassName, Doc, Effect, EffectKind, GuiNode, ModifierClass, Rect, RootClass, TriggerKind, Tween, UDim } from './model/types';
 import { EFFECTS } from './model/effects';
+import { MIN_TAP, type CheckIssue } from './model/a11y';
 import { applyPixelScale, designSize, pixelScaleFactor } from './model/pixelScale';
 import { addPrefab, updatePrefab, type Prefab } from './model/prefabs';
 import { buildFragment, rootStarter } from './model/presets';
@@ -1421,4 +1422,62 @@ export function colorName(hex: string, i: number): string {
   const names = ['Red', 'Orange', 'Yellow', 'Lime', 'Green', 'Teal', 'Cyan', 'Sky', 'Blue', 'Indigo', 'Purple', 'Pink'];
   const base = names[Math.floor(((h * 60 + 15) % 360) / 30)];
   return (max < 110 ? 'Dark ' : '') + base || `Color ${i + 1}`;
+}
+
+// ---------------------------------------------------------------------------
+// Accessibility checks
+
+/** Apply the suggested fixes (one undo step) */
+export function fixCheckIssues(issues: CheckIssue[]): number {
+  let fixed = 0;
+  S().update((d) => {
+    for (const is of issues) {
+      const n = d.nodes[is.id];
+      if (!n) continue;
+      if (is.kind === 'tap') {
+        // a UISizeConstraint keeps it tappable on every screen without changing its layout elsewhere
+        let c = n.children.map((cid) => d.nodes[cid]).find((m) => m?.className === 'UISizeConstraint');
+        if (!c) {
+          const m = createNode('UISizeConstraint');
+          m.parentId = n.id;
+          d.nodes[m.id] = m as Draft<GuiNode>;
+          n.children.unshift(m.id);
+          c = d.nodes[m.id];
+        }
+        const min = c.props.MinSize ?? { x: 0, y: 0 };
+        const max = c.props.MaxSize ?? { x: Infinity, y: Infinity };
+        c.props.MinSize = { x: Math.max(min.x, MIN_TAP), y: Math.max(min.y, MIN_TAP) };
+        c.props.MaxSize = { x: Math.max(max.x, MIN_TAP), y: Math.max(max.y, MIN_TAP) };
+        fixed++;
+      } else if (is.fix?.textColor) {
+        n.props.TextColor3 = is.fix.textColor;
+        fixed++;
+      } else if (is.fix?.textSize) {
+        n.props.TextSize = Math.max(n.props.TextSize, is.fix.textSize);
+        fixed++;
+      } else if (is.fix?.strokeColor) {
+        // a text outline (any existing text stroke is replaced)
+        for (const cid of [...n.children]) if (d.nodes[cid]?.className === 'UIStroke' && d.nodes[cid].props.ApplyStrokeMode !== 'Border') removeNode(d as Doc, cid);
+        const m = createNode('UIStroke', { Color: is.fix.strokeColor, Thickness: is.fix.strokeThickness ?? 2, ApplyStrokeMode: 'Contextual' });
+        m.parentId = n.id;
+        d.nodes[m.id] = m as Draft<GuiNode>;
+        n.children.unshift(m.id);
+        fixed++;
+      }
+    }
+  });
+  return fixed;
+}
+
+/** Mark check results as fine (or bring them back) */
+export function ignoreChecks(keys: string[], ignore: boolean) {
+  S().update((d) => {
+    const set = new Set(d.checksIgnored ?? []);
+    for (const k of keys) {
+      if (ignore) set.add(k);
+      else set.delete(k);
+    }
+    if (set.size) d.checksIgnored = [...set];
+    else delete d.checksIgnored;
+  });
 }

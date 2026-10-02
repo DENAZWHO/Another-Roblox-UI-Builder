@@ -253,6 +253,8 @@ export interface Doc {
   screens?: Screen[];
   /** Shared colour and text styles */
   styles?: { colors: ColorStyle[]; texts: TextStyle[] };
+  /** Accessibility check results marked as fine (keys like "contrast:<nodeId>") */
+  checksIgnored?: string[];
 }
 
 /** A named colour elements can link to */
