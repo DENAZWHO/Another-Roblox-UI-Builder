@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { robloxFonts } from './server/robloxFonts';
+import { openCloud } from './server/openCloud';
 
 /**
  * Local bridge for the Roblox Studio plugin (studio-plugin/UIBuilderSync.lua).
@@ -93,7 +94,7 @@ function studioSync(): Plugin {
 const root = fileURLToPath(new URL('.', import.meta.url));
 
 export default defineConfig({
-  plugins: [react(), studioSync(), robloxFonts(resolve(root, 'node_modules/.cache/rbx-fonts'))],
+  plugins: [react(), studioSync(), openCloud(), robloxFonts(resolve(root, 'node_modules/.cache/rbx-fonts'))],
   server: {
     port: 5173,
     proxy: {

@@ -1,8 +1,6 @@
 import { useMemo, useState, type ReactNode } from 'react';
 import {
-  AlignHorizontalJustifyCenter, AlignHorizontalJustifyEnd, AlignHorizontalJustifyStart, AlignVerticalJustifyCenter,
-  AlignVerticalJustifyEnd, AlignVerticalJustifyStart, ChevronDown, ChevronRight, Diamond, Plus, TextAlignCenter, TextAlignEnd,
-  Smartphone, TextAlignStart, Trash, Upload, X,
+  AlignHorizontalJustifyCenter, AlignHorizontalJustifyEnd, AlignHorizontalJustifyStart, AlignVerticalJustifyCenter, AlignVerticalJustifyEnd, AlignVerticalJustifyStart, ChevronDown, ChevronRight, Diamond, Plus, TextAlignCenter, TextAlignEnd, Smartphone, TextAlignStart, Trash, Upload, X, CloudUpload,
 } from 'lucide-react';
 import { useStore } from '../store';
 import { ANIMATABLE_PROPS, CLASS_PROPS, DEVICES, ENUMS, MODIFIER_CLASSES, isGuiObject, isImage, isModifier, isText, modifierAllowed, propDef, type PropDef, isRoot, isWorldGui, CORNER_PROPS } from '../model/schema';
@@ -17,6 +15,7 @@ import { ClassIcon } from './icons';
 import { RichColorEditor } from './RichColorEditor';
 import { ReferenceProps } from './References';
 import { EventsSection } from './EventsPanel';
+import { pickAndUploadImage } from '../upload';
 import { GamepadSection } from './GamepadPanel';
 import { PathSection } from './PathTool';
 import { targetOptions } from '../model/events';
@@ -25,6 +24,7 @@ import { useEffectiveNodes, useFontEpoch } from './hooks';
 import { computeLayout } from '../model/layout';
 import type { Doc } from '../model/types';
 import { rootOrigins, screenOfRoot, screenStartsVisible, screensOf } from '../model/screens';
+import { ComponentBanner } from './ComponentPanel';
 
 export function PropertiesPanel() {
   const selection = useStore((s) => s.selection);
@@ -144,6 +144,7 @@ function SelectionProps({ ids, nodes }: { ids: string[]; nodes: Record<string, G
         {multi ? <span>{ids.length} selected</span> : <NameInput node={primary} />}
         <span className="sel-class">{multi && same.length !== ids.length ? 'Mixed' : cls}</span>
       </div>
+      {!multi && <ComponentBanner node={primary} />}
       {isWorldGui(cls) && !multi && <WorldSection node={primary} />}
       {cls === 'ScreenGui' && !multi && <ScreenSection node={primary} />}
       {cls === 'ScreenGui' && !multi && (
@@ -583,9 +584,10 @@ function ImageSection({ ids, node, set }: { ids: string[]; node: GuiNode; set: (
       <Row label="Image" title="Roblox asset id (rbxassetid://123 or just 123)">
         <TextField value={p.Image} onChange={set('Image')} placeholder="rbxassetid://" />
       </Row>
-      <Row label="Preview" title="Local image used for previewing only (not exported). Upload the same image to Roblox and paste its asset id above.">
+      <Row label="Picture" title="Upload to Roblox: the image gets a real asset id. Local file: only shown in the editor.">
         <div className="pair">
-          <button className="btn small" onClick={upload}><Upload size={12} /> Local file</button>
+          <button className="btn small" title="Upload the picture to Roblox (Open Cloud) and fill in its asset id" onClick={() => pickAndUploadImage(ids)}><CloudUpload size={12} /> Upload to Roblox</button>
+          <button className="btn small" title="Preview a local file here only (not uploaded or exported)" onClick={upload}><Upload size={12} /> Local file</button>
           {node.preview && <button className="btn small" onClick={() => update((d) => ids.forEach((id) => delete d.nodes[id].preview))}><X size={12} /> Clear</button>}
         </div>
       </Row>

@@ -1222,3 +1222,59 @@ export function moveRootToScreen(rootId: string, screenId: string) {
     if (d.nodes[rootId]) d.nodes[rootId].screen = screenId;
   });
 }
+
+// ---------------------------------------------------------------------------
+// Linked components
+
+/** Turn an element into a main component (its copies become instances that follow it) */
+export function makeComponent(id: string) {
+  const n = S().doc.nodes[id];
+  if (!n || !isGuiObject(n.className) || n.component) return;
+  if (n.instanceOf || n.src) return S().showToast('Detach it first — it is part of an instance');
+  S().update((d) => {
+    d.nodes[id].component = { createdAt: Date.now() };
+  });
+  S().showToast(`"${n.name}" is now a component — duplicate it (Ctrl+D) or insert it from Insert → Components to make instances`);
+}
+
+/** Stop being a main component (its instances become plain copies) */
+export function removeComponent(id: string) {
+  S().update((d) => {
+    if (d.nodes[id]) delete d.nodes[id].component;
+  });
+}
+
+/** A new instance of a main component (inside the selected element, or centred on a canvas point) */
+export function insertInstance(mainId: string, opts: { parentId?: string; at?: { x: number; y: number } } = {}) {
+  const { doc } = S();
+  if (!doc.nodes[mainId]?.component) return [];
+  return insertFragmentAtPoint(extractFragment(doc.nodes, [mainId]), opts);
+}
+
+/** Make an instance a plain copy */
+export function detachInstance(rootId: string) {
+  S().update((d) => {
+    const walk = (id: string) => {
+      const n = d.nodes[id];
+      if (!n) return;
+      delete n.instanceOf;
+      delete n.src;
+      delete n.overrides;
+      n.children.forEach(walk);
+    };
+    walk(rootId);
+  });
+}
+
+/** Drop an instance's overrides (it looks like the main again) */
+export function resetOverrides(rootId: string) {
+  S().update((d) => {
+    const walk = (id: string) => {
+      const n = d.nodes[id];
+      if (!n) return;
+      delete n.overrides;
+      n.children.forEach(walk);
+    };
+    walk(rootId);
+  });
+}

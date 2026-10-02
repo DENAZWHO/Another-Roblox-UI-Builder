@@ -3,9 +3,9 @@ import { ChevronDown, ChevronRight, Eye, EyeOff, Lock, LockOpen, Monitor, Plus, 
 import { triggerLabel } from '../model/events';
 import { useStore } from '../store';
 import { isGuiObject, isModifier, GUI_OBJECT_CLASSES, MODIFIER_CLASSES, modifierAllowed, isRoot, isWorldGui } from '../model/schema';
-import { pathTo } from '../model/doc';
+import { pathTo, extractFragment } from '../model/doc';
 import type { GuiNode, GuiObjectClass, ModifierClass, Screen } from '../model/types';
-import { addModifier, insertionParent, insertNode, insertRoot, moveNodes, rename, toggleLocked, toggleVisible, batch, insertComponent, insertPrefab, layoutNow, placeNodes, reorderInStack, stackDropIndex, stackLayout, addScreen, deleteScreen, moveRootToScreen, renameScreen, setScreenStart } from '../actions';
+import { addModifier, insertionParent, insertNode, insertRoot, moveNodes, rename, toggleLocked, toggleVisible, batch, insertComponent, insertPrefab, layoutNow, placeNodes, reorderInStack, stackDropIndex, stackLayout, addScreen, deleteScreen, moveRootToScreen, renameScreen, setScreenStart, insertInstance } from '../actions';
 import { ClassIcon } from './icons';
 import { PRESETS } from '../model/presets';
 import { zoomToScreen, zoomToSelection } from './viewport';
@@ -163,6 +163,8 @@ function Layers() {
             {kids.length > 0 ? open ? <ChevronDown size={12} /> : <ChevronRight size={12} /> : null}
           </span>
           <ClassIcon cls={n.className} size={13} />
+          {n.component && <span className="comp-badge main" title="Main component — its instances follow it">◆</span>}
+          {n.instanceOf && <span className="comp-badge" title={`Instance of ${doc.nodes[n.instanceOf]?.name ?? 'a component'}${n.overrides?.length ? ' (with overrides)' : ''}`}>◇</span>}
           <LayerName node={n} />
           {n.events?.some((h) => h.actions.length) && (
             <span className="layer-event" title={`Events: ${n.events.map((h) => triggerLabel(h.on).replace(/^When /, '')).join(', ')}`}><Zap size={11} /></span>
@@ -300,7 +302,9 @@ export function insertDropped(data: DataTransfer, parentId: string, at?: { x: nu
     // dropped on a stack (UIListLayout / UIGridLayout): slot in where the pointer is, like the preview showed
     const slot = at && stackLayout(parentId) ? stackDropIndex(parentId, at) : null;
     let roots: string[] = [];
-    if (componentId) {
+    if (componentId?.startsWith('doc:')) {
+      roots = insertInstance(componentId.slice(4), { parentId, at });
+    } else if (componentId) {
       const p = PRESETS.find((x) => x.id === componentId);
       if (p) roots = insertComponent(p, { parentId, at });
     } else if (prefabId) {
@@ -376,6 +380,7 @@ function InsertPanel() {
         })}
       </div>
       <div className="insert-title">Components {intoLabel}</div>
+      <DocComponents />
       <div className="insert-list">
         {PRESETS.map((p) => (
           <button
@@ -456,4 +461,35 @@ function ScreenHeader({ screen }: { screen: Screen }) {
 function moveToNewRoot(screenId: string) {
   const id = insertRoot('ScreenGui');
   moveRootToScreen(id, screenId);
+}
+
+/** Main components in this document: click to insert an instance, or drag it in */
+function DocComponents() {
+  const doc = useStore((s) => s.doc);
+  const mains = Object.values(doc.nodes).filter((n) => n.component);
+  if (!mains.length) return <div className="hint doc-comp-hint">Right-click an element → Make component to reuse it here; its copies stay linked.</div>;
+  return (
+    <div className="insert-list doc-comps">
+      {mains.map((m) => {
+        const count = Object.values(doc.nodes).filter((n) => n.instanceOf === m.id).length;
+        return (
+          <button
+            key={m.id}
+            className="insert-row preset"
+            title={`${m.name} — click to insert an instance, or drag it onto the canvas or a layer`}
+            draggable
+            onDragStart={(e) => {
+              e.dataTransfer.setData(COMPONENT_DRAG_TYPE, 'doc:' + m.id);
+              e.dataTransfer.effectAllowed = 'copy';
+              startDragPreview(e, m.name, () => extractFragment(useStore.getState().doc.nodes, [m.id]));
+            }}
+            onClick={() => insertInstance(m.id)}
+          >
+            <span className="preset-name"><span className="comp-badge main">◆</span> {m.name}</span>
+            <span className="insert-desc">{count} instance{count === 1 ? '' : 's'} · this document</span>
+          </button>
+        );
+      })}
+    </div>
+  );
 }

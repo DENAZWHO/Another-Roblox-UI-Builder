@@ -655,3 +655,18 @@ kbd { min-width: 18px; text-align: center; display: inline-block; }
 
 /* gamepad selection in Preview (Roblox's default highlight) */
 .gp-highlight { position: absolute; border: 3px solid #fff; border-radius: 8px; box-shadow: 0 0 0 2px #1e1e1e, 0 0 12px rgba(255, 255, 255, 0.6); pointer-events: none; z-index: 1000002; }
+
+/* image upload settings */
+.upload-form { display: flex; flex-direction: column; gap: 10px; margin: 12px 0; }
+.upload-form label { display: grid; grid-template-columns: 90px 1fr; align-items: center; gap: 10px; }
+.upload-form label > span { color: var(--muted); }
+.upload-error { color: #ff6b6b; margin: 4px 0; }
+
+/* linked components */
+.comp-badge { color: #c084fc; font-size: 11px; line-height: 1; flex-shrink: 0; }
+.comp-badge.main { color: #a855f7; }
+.comp-banner { margin: 8px 12px 0; padding: 8px 10px; border-radius: 6px; background: rgba(168, 85, 247, 0.12); border: 1px solid rgba(168, 85, 247, 0.35); display: flex; flex-direction: column; gap: 6px; }
+.comp-banner-title { display: flex; align-items: center; gap: 6px; font-weight: 600; }
+.comp-banner-actions { display: flex; flex-wrap: wrap; gap: 4px; }
+.doc-comp-hint { padding: 0 12px 6px; font-size: 11px; }
+.doc-comps { margin-bottom: 6px; }

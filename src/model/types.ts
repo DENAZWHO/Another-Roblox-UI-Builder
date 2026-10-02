@@ -138,6 +138,14 @@ export interface GuiNode {
   screen?: string;
   /** Path2D: control points (set with SetControlPoints) */
   points?: PathPoint[];
+  /** Linked components: this element is a main component */
+  component?: { createdAt?: number };
+  /** …this element is an instance of that main component (its root) */
+  instanceOf?: string;
+  /** …the main-component node this instance node mirrors */
+  src?: string;
+  /** …properties changed on this instance node (kept when the main changes) */
+  overrides?: string[];
   /** Gamepad navigation: NextSelectionUp/Down/Left/Right and SelectionImageObject (element ids; set by the behaviour script) */
   nav?: { up?: string; down?: string; left?: string; right?: string; image?: string };
 }

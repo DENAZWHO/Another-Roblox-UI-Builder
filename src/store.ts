@@ -2,10 +2,11 @@ import { create } from 'zustand';
 import { produce, type Draft } from 'immer';
 import type { Doc, GuiObjectClass } from './model/types';
 import type { Units } from './model/doc';
+import { finalizeComponents } from './model/components';
 
 export type Tool = 'move' | 'hand' | 'pen' | GuiObjectClass;
 export type Mode = 'design' | 'animate';
-export type Dialog = null | 'export' | 'preview' | 'shortcuts' | 'studio';
+export type Dialog = null | 'export' | 'preview' | 'shortcuts' | 'studio' | 'upload';
 
 interface UpdateOpts {
   /** Consecutive updates with the same key within 800ms merge into one undo step */
@@ -83,7 +84,7 @@ export const useStore = create<State>()((set, get) => ({
 
   update: (recipe, opts) => {
     const s = get();
-    const next = produce(s.doc, recipe);
+    const next = finalizeComponents(s.doc, produce(s.doc, recipe));
     if (next === s.doc) return;
     if (s.gestureBase) {
       set({ doc: next });

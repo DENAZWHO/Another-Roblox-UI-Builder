@@ -130,6 +130,15 @@ export function insertFragment(doc: Doc, frag: Fragment, parentId: string | null
     n.children.forEach(walk);
   };
   frag.rootIds.forEach(walk);
+  // copying a main component (Duplicate, insert from the Components list) makes an instance of it
+  const inMain = new Set<string>();
+  const markMain = (id: string) => {
+    const n = byId.get(id);
+    if (!n) return;
+    inMain.add(id);
+    n.children.forEach(markMain);
+  };
+  for (const n of reachable) if (n.component) markMain(n.id);
   for (const n of reachable) {
     const copy: GuiNode = structuredClone(n);
     copy.id = map.get(n.id)!;
@@ -138,6 +147,12 @@ export function insertFragment(doc: Doc, frag: Fragment, parentId: string | null
     // references to elements inside the copy follow the copy; references to anything else are kept
     if (copy.toast?.triggerNodeId && map.has(copy.toast.triggerNodeId)) copy.toast.triggerNodeId = map.get(copy.toast.triggerNodeId);
     if (copy.boundingUI && map.has(copy.boundingUI)) copy.boundingUI = map.get(copy.boundingUI);
+    if (inMain.has(n.id)) {
+      if (copy.component) copy.instanceOf = n.id;
+      delete copy.component;
+      copy.src = n.id;
+      delete copy.overrides;
+    }
     if (copy.nav) for (const k of Object.keys(copy.nav) as (keyof NonNullable<GuiNode['nav']>)[]) if (copy.nav[k] && map.has(copy.nav[k]!)) copy.nav[k] = map.get(copy.nav[k]!);
     copy.events?.forEach((h) => h.actions.forEach((a) => {
       if (a.target && map.has(a.target)) a.target = map.get(a.target);

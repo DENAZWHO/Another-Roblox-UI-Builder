@@ -11,16 +11,16 @@ import { TRIGGER_LABELS } from './labels';
 import { DEVICES, isGuiObject, isWorldGui } from '../model/schema';
 import { download, projectJson, projectName } from '../files';
 import { pushToStudio, useSyncStatus } from '../sync';
+import { forgetUploadConfig, saveUploadConfig, useUploadStatus } from '../upload';
 import { DeviceCutouts, ScreenView, TopbarMock, type RenderCtx } from './render';
 import { firstSelectable, navigate } from './GamepadPanel';
 import { useFontEpoch } from './hooks';
 import { Segmented, Toggle } from './fields';
 import { MenuItem, useClickOutside } from './Toolbar';
-import {
-  convertUnits, copySelection, makeResponsive, savePrefabFromSelection, cutSelection, deleteSelection, duplicateSelection, groupSelection, pasteClipboard, reorder,
-  toggleLocked, toggleVisible, ungroupSelection,
-} from '../actions';
+import { convertUnits, copySelection, makeResponsive, savePrefabFromSelection, cutSelection, deleteSelection, duplicateSelection, groupSelection, pasteClipboard, reorder, toggleLocked, toggleVisible, ungroupSelection, makeComponent, insertInstance, detachInstance } from '../actions';
 import { screensOf } from '../model/screens';
+import { instanceRootOf } from '../model/components';
+import { goToMain } from './ComponentPanel';
 
 function Modal({ title, children, onClose, wide, footer }: { title: ReactNode; children: ReactNode; onClose: () => void; wide?: boolean; footer?: ReactNode }) {
   useEffect(() => {
@@ -50,7 +50,83 @@ export function Dialogs() {
   if (dialog === 'preview') return <PreviewDialog />;
   if (dialog === 'shortcuts') return <ShortcutsDialog />;
   if (dialog === 'studio') return <StudioDialog />;
+  if (dialog === 'upload') return <UploadDialog />;
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// Uploading images to Roblox (Open Cloud)
+
+function UploadDialog() {
+  const [status, refresh] = useUploadStatus();
+  const [key, setKey] = useState('');
+  const [creatorType, setCreatorType] = useState<'user' | 'group'>('user');
+  const [creatorId, setCreatorId] = useState('');
+  const [error, setError] = useState('');
+  useEffect(() => {
+    if (status?.creatorId) {
+      setCreatorId(status.creatorId);
+      setCreatorType(status.creatorType ?? 'user');
+    }
+  }, [status]);
+  const save = async () => {
+    setError('');
+    try {
+      await saveUploadConfig({ apiKey: key || undefined, creatorType, creatorId });
+      setKey('');
+      refresh();
+      useStore.getState().showToast('Uploading is set up — use "Upload to Roblox" on any image');
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+  return (
+    <Modal title="Upload images to Roblox" onClose={close}>
+      {status?.offline ? (
+        <p className="hint">Uploading goes through the local dev server — start the editor with <code>npm run dev</code>.</p>
+      ) : (
+        <>
+          <div className={`sync-status ${status?.configured ? 'ok' : 'off'}`}>
+            <span className="dot" />
+            {status?.configured ? `Ready — key ${status.keyHint}, uploading as ${status.creatorType} ${status.creatorId}` : 'Not set up yet'}
+          </div>
+          <ol className="steps">
+            <li>
+              On <a href="https://create.roblox.com/dashboard/credentials" target="_blank" rel="noreferrer">Creator Dashboard → Open Cloud → API Keys</a>, create a key with the
+              <b> Assets API</b> (Read and Write). Add your IP address or <code>0.0.0.0/0</code> under Accepted IP addresses.
+            </li>
+            <li>Paste it below with the user id (from your profile URL) or group id the images should belong to.</li>
+            <li>Then press <b>Upload to Roblox</b> under an image's Image property.</li>
+          </ol>
+          <div className="upload-form">
+            <label>
+              <span>API key</span>
+              <input className="text" type="password" autoComplete="off" value={key} placeholder={status?.configured ? 'Saved — paste a new key to replace it' : 'Paste your Open Cloud API key'} onChange={(e) => setKey(e.target.value)} onKeyDown={(e) => e.stopPropagation()} />
+            </label>
+            <label>
+              <span>Upload as</span>
+              <Segmented value={creatorType} options={[{ value: 'user', label: 'Me (user)' }, { value: 'group', label: 'A group' }]} onChange={setCreatorType} />
+            </label>
+            <label>
+              <span>{creatorType === 'group' ? 'Group id' : 'User id'}</span>
+              <input className="text" value={creatorId} inputMode="numeric" placeholder={creatorType === 'group' ? 'e.g. 7654321' : 'e.g. 1234567'} onChange={(e) => setCreatorId(e.target.value.replace(/\D/g, ''))} onKeyDown={(e) => e.stopPropagation()} />
+            </label>
+          </div>
+          {error && <p className="upload-error">{error}</p>}
+          <p className="hint">
+            The key is stored only on this computer (in <code>~/.roblox-ui-builder/opencloud.json</code>, outside the project), used by the local dev server, and never sent to the browser or saved in project files.
+          </p>
+          <div className="sync-actions">
+            {status?.configured && (
+              <button className="btn" onClick={async () => { await forgetUploadConfig(); refresh(); }}>Forget key</button>
+            )}
+            <span style={{ flex: 1 }} />
+            <button className="primary" disabled={!creatorId || (!key && !status?.configured)} onClick={save}>Save</button>
+          </div>
+        </>
+      )}
+    </Modal>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -494,6 +570,10 @@ export function ContextMenu() {
       <MenuItem label="Send to back" shortcut="Ctrl+[" disabled={!gui.length} onClick={run(() => reorder('back'))} />
       <div className="menu-sep" />
       <MenuItem label="Save as prefab" shortcut="Ctrl+Alt+K" disabled={!gui.length} onClick={run(() => savePrefabFromSelection())} />
+      {first && gui.length === 1 && !first.component && !instanceRootOf(doc, first.id) && <MenuItem label="Make component" onClick={run(() => makeComponent(first.id))} />}
+      {first?.component && <MenuItem label="Insert an instance" onClick={run(() => insertInstance(first.id))} />}
+      {first && instanceRootOf(doc, first.id) && <MenuItem label="Go to main component" onClick={run(() => goToMain(first.id))} />}
+      {first && instanceRootOf(doc, first.id) && <MenuItem label="Detach instance" onClick={run(() => detachInstance(instanceRootOf(doc, first.id)!.id))} />}
       <MenuItem label="Make responsive" disabled={!gui.length} onClick={run(() => makeResponsive(gui))} />
       <MenuItem label="Convert to Scale" disabled={!gui.length} onClick={run(() => convertUnits(gui, 'scale'))} />
       <MenuItem label="Convert to Offset" disabled={!gui.length} onClick={run(() => convertUnits(gui, 'offset'))} />

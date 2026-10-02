@@ -137,6 +137,7 @@ export function Toolbar() {
               <MenuItem label="Import .rbxmx…" onClick={() => { close(); importRbxmx(); }} />
               <MenuItem label="Export…" shortcut="Ctrl+E" onClick={() => { close(); useStore.setState({ dialog: 'export' }); }} />
               <MenuItem label="Studio plugin sync…" onClick={() => { close(); useStore.setState({ dialog: 'studio' }); }} />
+              <MenuItem label="Image upload (Open Cloud)…" onClick={() => { close(); useStore.setState({ dialog: 'upload' }); }} />
               <div className="menu-sep" />
               <MenuItem label="Keyboard shortcuts" shortcut="?" onClick={() => { close(); useStore.setState({ dialog: 'shortcuts' }); }} />
             </>
