@@ -1,7 +1,7 @@
 import { useStore } from './store';
 import { isRoot } from './model/schema';
 import { deserialize, emptyDoc, insertFragment, serialize } from './model/doc';
-import { parseRbxmx } from './export/rbxmx';
+import { parseRobloxFile } from './export/rbxmx';
 import { insertionParent, batch } from './actions';
 import type { Doc } from './model/types';
 import { loadRefImages, pruneRefImages, putRefImage, refImageSrc } from './model/refImages';
@@ -71,12 +71,19 @@ export function newDocument() {
   useStore.getState().loadDoc(emptyDoc());
 }
 
+/** Roblox files the importer reads */
+export const ROBLOX_FILE = /\.(rbxm|rbxmx|rbxl|rbxlx)$/i;
+
 export async function importRbxmx() {
-  const f = await pickFile('.rbxmx,.xml');
-  if (!f) return;
+  const f = await pickFile('.rbxm,.rbxmx,.rbxl,.rbxlx,.xml');
+  if (f) await importRobloxFile(f);
+}
+
+/** Import the GUIs from a .rbxm / .rbxmx model or a .rbxl / .rbxlx place */
+export async function importRobloxFile(f: File) {
   try {
-    const { fragment, skipped } = parseRbxmx(await f.text());
-    if (!fragment.rootIds.length) throw new Error('no supported GUI instances found');
+    const { fragment, skipped } = parseRobloxFile(new Uint8Array(await f.arrayBuffer()), f.name);
+    if (!fragment.rootIds.length) throw new Error(/\.rbxlx?$/i.test(f.name) ? 'no ScreenGui, BillboardGui or SurfaceGui in this place' : 'no supported GUI instances found');
     const screens = fragment.rootIds.filter((r) => isRoot(fragment.nodes.find((n) => n.id === r)?.className));
     const others = fragment.rootIds.filter((r) => !screens.includes(r));
     const created: string[] = [];
@@ -94,7 +101,8 @@ export async function importRbxmx() {
       }
     });
     useStore.getState().select(created);
-    useStore.getState().showToast(`Imported ${f.name}${skipped.length ? ` (skipped: ${skipped.join(', ')})` : ''}`);
+    const guis = fragment.rootIds.length;
+    useStore.getState().showToast(`Imported ${guis} GUI${guis === 1 ? '' : 's'} from ${f.name}${skipped.length ? ` (skipped: ${skipped.join(', ')})` : ''}`);
   } catch (e) {
     useStore.getState().showToast(`Import failed: ${(e as Error).message}`);
   }

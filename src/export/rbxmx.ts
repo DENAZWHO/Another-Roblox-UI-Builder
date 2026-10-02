@@ -6,6 +6,7 @@ import { hexRgb, normalizeAsset } from './luau';
 import { rootScript } from './behavior';
 import { exportedProps } from '../model/richColors';
 import { gameStartDoc } from '../model/screens';
+import { isBinaryRoblox, parseBinary, type BinInstance } from './rbxbin';
 
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const f = (n: number) => (n === Infinity ? 'INF' : n === -Infinity ? '-INF' : String(+(+n).toFixed(6)));
@@ -185,33 +186,108 @@ function readProp(def: PropDef, el: Element): any {
   }
 }
 
-/** Parse a .rbxmx file into a fragment. Unsupported classes (and their descendants) are skipped. */
-export function parseRbxmx(xml: string): { fragment: Fragment; skipped: string[] } {
-  const dom = new DOMParser().parseFromString(xml, 'application/xml');
-  if (dom.getElementsByTagName('parsererror').length) throw new Error('Not a valid .rbxmx (XML) file');
-  const root = dom.documentElement;
+// ---------------------------------------------------------------------------
+// Import: .rbxmx / .rbxlx (XML) and .rbxm / .rbxl (binary) through one converter
+
+/** An instance read from a file, before conversion */
+interface RawInst {
+  className: string;
+  name: string;
+  props: Record<string, { el: Element } | { type: number; value: any }>;
+  children: RawInst[];
+}
+
+function xmlToRaw(el: Element): RawInst {
+  const props: RawInst['props'] = {};
+  const propsEl = Array.from(el.children).find((c) => c.tagName === 'Properties');
+  for (const p of Array.from(propsEl?.children ?? [])) props[p.getAttribute('name') ?? ''] = { el: p };
+  const nameEl = props.Name && 'el' in props.Name ? props.Name.el : null;
+  return {
+    className: el.getAttribute('class') ?? '',
+    name: nameEl?.textContent ?? el.getAttribute('class') ?? '',
+    props,
+    children: Array.from(el.children).filter((c) => c.tagName === 'Item').map(xmlToRaw),
+  };
+}
+
+function binToRaw(b: BinInstance): RawInst {
+  const props: RawInst['props'] = {};
+  for (const [k, [type, value]] of Object.entries(b.props)) props[k] = { type, value };
+  return { className: b.className, name: typeof b.props.Name?.[1] === 'string' ? b.props.Name[1] : b.className, props, children: b.children.map(binToRaw) };
+}
+
+/** A binary property value in the editor's format (undefined: keep the default) */
+function readBinProp(def: PropDef, type: number, v: any): any {
+  switch (def.type) {
+    case 'UDim2':
+      return type === 0x07 ? v : undefined;
+    case 'UDim':
+      return type === 0x06 ? v : undefined;
+    case 'Vector2':
+      return type === 0x0d ? v : undefined;
+    case 'Vector3':
+      return type === 0x0e ? v : undefined;
+    case 'float':
+    case 'int':
+      return typeof v === 'number' ? v : undefined;
+    case 'bool':
+      return typeof v === 'boolean' ? v : undefined;
+    case 'string':
+    case 'Content':
+      return typeof v === 'string' ? v : undefined;
+    case 'Color3':
+      return type === 0x0c || type === 0x1a ? toHex(v.r, v.g, v.b) : undefined;
+    case 'enum': {
+      if (type !== 0x12) return undefined;
+      const map = ENUMS[def.enumType!] ?? {};
+      return Object.keys(map).find((k) => map[k] === v);
+    }
+    case 'Font':
+      return type === 0x20 ? { family: familyFromAssetUrl(v.family), weight: v.weight || 400, style: v.style } : undefined;
+    case 'ColorSequence':
+      return type === 0x16 && v.length >= 2 ? v.map((k: any) => ({ t: k.t, c: toHex(k.r, k.g, k.b) })) : undefined;
+    case 'NumberSequence':
+      return type === 0x15 && v.length >= 2 ? v.map((k: any) => ({ t: k.t, v: k.v })) : undefined;
+    case 'Rect':
+      return type === 0x18 ? v : undefined;
+  }
+  return undefined;
+}
+
+const LAYER_COLLECTORS = new Set(['ScreenGui', 'BillboardGui', 'SurfaceGui']);
+
+/**
+ * Turn file instances into a fragment.
+ * Models: every supported instance found (looking inside folders and other containers).
+ * Places: only ScreenGuis / BillboardGuis / SurfaceGuis (world GUIs on a part get it as their Adornee).
+ * Unsupported instances inside a GUI (scripts…) are skipped and reported.
+ */
+function rawToFragment(top: RawInst[], place: boolean): { fragment: Fragment; skipped: string[] } {
   const nodes: GuiNode[] = [];
   const skipped = new Set<string>();
 
-  const readItem = (el: Element, parentId: string | null): string | null => {
-    const cls = el.getAttribute('class') as ClassName;
+  const readInst = (raw: RawInst, parentId: string | null): string | null => {
+    const cls = raw.className as ClassName;
     if (!CLASS_PROPS[cls]) {
       skipped.add(cls);
       return null;
     }
     const node = createNode(cls);
     node.parentId = parentId;
-    const propsEl = Array.from(el.children).find((c) => c.tagName === 'Properties');
+    node.name = raw.name || cls;
     let hasFontFace = false;
     let legacyFont: number | null = null;
-    for (const p of Array.from(propsEl?.children ?? [])) {
-      const name = p.getAttribute('name') ?? '';
-      if (name === 'Name') node.name = p.textContent ?? cls;
-      if (name === 'Font' && p.tagName === 'token') legacyFont = parseInt(p.textContent ?? '0', 10);
+    for (const [name, p] of Object.entries(raw.props)) {
+      if (name === 'Font') {
+        if ('el' in p && p.el.tagName === 'token') legacyFont = parseInt(p.el.textContent ?? '0', 10);
+        if ('type' in p && p.type === 0x12) legacyFont = p.value;
+      }
       const def = CLASS_PROPS[cls].find((d) => d.name === name);
       if (!def) continue;
       try {
-        node.props[name] = readProp(def, p);
+        const v = 'el' in p ? readProp(def, p.el) : readBinProp(def, p.type, p.value);
+        if (v === undefined) continue;
+        node.props[name] = v;
         if (name === 'FontFace') hasFontFace = true;
       } catch {
         /* keep default */
@@ -222,19 +298,48 @@ export function parseRbxmx(xml: string): { fragment: Fragment; skipped: string[]
       node.props.FontFace = { family, weight, style };
     }
     nodes.push(node);
-    for (const c of Array.from(el.children)) {
-      if (c.tagName !== 'Item') continue;
-      const cid = readItem(c, node.id);
+    for (const c of raw.children) {
+      const cid = readInst(c, node.id);
       if (cid) node.children.push(cid);
     }
     return node.id;
   };
 
   const rootIds: string[] = [];
-  for (const c of Array.from(root.children)) {
-    if (c.tagName !== 'Item') continue;
-    const id = readItem(c, null);
-    if (id) rootIds.push(id);
-  }
+  // look through containers (services, folders, models, parts) for what to import
+  const find = (raw: RawInst, path: string[]) => {
+    const wanted = place ? LAYER_COLLECTORS.has(raw.className) : !!CLASS_PROPS[raw.className as ClassName];
+    if (wanted) {
+      const id = readInst(raw, null);
+      if (!id) return;
+      rootIds.push(id);
+      // a world GUI sitting on a part is attached to it
+      const n = nodes.find((x) => x.id === id)!;
+      if ((n.className === 'BillboardGui' || n.className === 'SurfaceGui') && path.length >= 2 && path[0] === 'Workspace') n.adornee = path.join('.');
+      return;
+    }
+    for (const c of raw.children) find(c, [...path, raw.name]);
+  };
+  for (const r of top) find(r, []);
   return { fragment: { nodes, rootIds }, skipped: [...skipped] };
+}
+
+/** Parse a .rbxmx / .rbxlx (XML) file into a fragment */
+export function parseRbxmx(xml: string, place = false): { fragment: Fragment; skipped: string[] } {
+  const dom = new DOMParser().parseFromString(xml, 'application/xml');
+  if (dom.getElementsByTagName('parsererror').length) throw new Error('Not a valid Roblox XML file');
+  const top = Array.from(dom.documentElement.children).filter((c) => c.tagName === 'Item').map(xmlToRaw);
+  return rawToFragment(top, place);
+}
+
+/** Parse a .rbxm / .rbxl (binary) file into a fragment */
+export function parseRbxBinary(bytes: Uint8Array, place = false): { fragment: Fragment; skipped: string[] } {
+  return rawToFragment(parseBinary(bytes).map(binToRaw), place);
+}
+
+/** Any Roblox model / place file */
+export function parseRobloxFile(bytes: Uint8Array, fileName: string): { fragment: Fragment; skipped: string[] } {
+  const place = /\.rbxlx?$/i.test(fileName);
+  if (isBinaryRoblox(bytes)) return parseRbxBinary(bytes, place);
+  return parseRbxmx(new TextDecoder().decode(bytes), place);
 }

@@ -134,7 +134,7 @@ export function Toolbar() {
               <MenuItem label="Open project…" shortcut="Ctrl+O" onClick={() => { close(); openProject(); }} />
               <MenuItem label="Save project" shortcut="Ctrl+S" onClick={() => { close(); saveProject(); }} />
               <div className="menu-sep" />
-              <MenuItem label="Import .rbxmx…" onClick={() => { close(); importRbxmx(); }} />
+              <MenuItem label="Import from Roblox (.rbxm, .rbxl…)…" onClick={() => { close(); importRbxmx(); }} />
               <MenuItem label="Export…" shortcut="Ctrl+E" onClick={() => { close(); useStore.setState({ dialog: 'export' }); }} />
               <MenuItem label="Studio plugin sync…" onClick={() => { close(); useStore.setState({ dialog: 'studio' }); }} />
               <MenuItem label="Image upload (Open Cloud)…" onClick={() => { close(); useStore.setState({ dialog: 'upload' }); }} />

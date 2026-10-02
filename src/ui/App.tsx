@@ -16,7 +16,7 @@ import {
   copySelection, savePrefabFromSelection, cutSelection, deleteSelection, duplicateSelection, groupSelection, nudge, pasteClipboard,
   reorder, selectAll, toggleLocked, toggleVisible, ungroupSelection,
 } from '../actions';
-import { openProject, saveProject } from '../files';
+import { ROBLOX_FILE, importRobloxFile, openProject, saveProject } from '../files';
 import { addReference, getReference, isImageFile, removeReference, selectReference, toggleAllReferences, updateReference } from '../references';
 import { isGuiObject, isRoot } from '../model/schema';
 import { clipLength } from '../model/animation';
@@ -147,6 +147,13 @@ export function App() {
     const b = (e.currentTarget as HTMLElement).getBoundingClientRect();
     const wx = (e.clientX - b.left - s.pan.x) / s.zoom;
     const wy = (e.clientY - b.top - s.pan.y) / s.zoom;
+    // Roblox model / place files are imported
+    const robloxFiles = Array.from(e.dataTransfer.files).filter((f) => ROBLOX_FILE.test(f.name));
+    if (robloxFiles.length) {
+      e.preventDefault();
+      robloxFiles.forEach((f) => importRobloxFile(f));
+      return;
+    }
     // image files from the desktop become reference images
     const images = Array.from(e.dataTransfer.files).filter(isImageFile);
     if (images.length) {
