@@ -166,17 +166,11 @@ export function insertNode(className: ClassName, opts: { parentId?: string; rect
     Object.assign(node.props, rectToProps({ ...node.props, Position: { x: { s: 0, o: 0 }, y: { s: 0, o: 0 } } }, rect, content, s.units, true));
   }
   node.name = className;
-  // In Scale mode new text scales with its box (capped at its size) so it isn't huge on small screens
-  const capText = s.units === 'scale' && isText(className);
-  if (capText) node.props.TextScaled = true;
+  // In Scale mode new text scales with its box (fills it, like TextScaled in Roblox; a Max can be set after)
+  if (s.units === 'scale' && isText(className)) node.props.TextScaled = true;
   s.update((d) => {
     d.nodes[node.id] = node as Draft<GuiNode>;
     attach(d, node.id, parentId);
-    if (capText) {
-      const cap = createNode('UITextSizeConstraint', { MaxTextSize: Math.round(node.props.TextSize) });
-      d.nodes[cap.id] = cap as Draft<GuiNode>;
-      attach(d, cap.id, node.id, 0);
-    }
   });
   if (opts.select !== false) s.select([node.id]);
   return node.id;
@@ -1480,4 +1474,24 @@ export function ignoreChecks(keys: string[], ignore: boolean) {
     if (set.size) d.checksIgnored = [...set];
     else delete d.checksIgnored;
   });
+}
+
+/** Largest size scaled text may grow to (its UITextSizeConstraint's MaxTextSize; one is added if needed) */
+export function setTextMax(ids: string[], max: number) {
+  const v = Math.max(1, Math.min(100, Math.round(max)));
+  S().update((d) => {
+    for (const id of ids) {
+      const n = d.nodes[id];
+      if (!n || !isText(n.className)) continue;
+      let cap = n.children.map((c) => d.nodes[c]).find((c) => c?.className === 'UITextSizeConstraint');
+      if (!cap) {
+        const m = createNode('UITextSizeConstraint');
+        d.nodes[m.id] = m as Draft<GuiNode>;
+        attach(d, m.id, id, 0);
+        cap = d.nodes[m.id];
+      }
+      cap.props.MaxTextSize = v;
+      if (cap.props.MinTextSize > v) cap.props.MinTextSize = v;
+    }
+  }, { coalesce: 'textmax' });
 }

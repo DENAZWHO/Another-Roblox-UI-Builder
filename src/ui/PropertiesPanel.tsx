@@ -7,7 +7,7 @@ import { ANIMATABLE_PROPS, CLASS_PROPS, DEVICES, ENUMS, MODIFIER_CLASSES, isGuiO
 import { FONT_FAMILIES, FONT_WEIGHTS, fontFamily, nearestFace, slantedItalic, weightName } from '../model/fonts';
 import { EASING_DIRECTIONS, EASING_STYLES, ease } from '../model/animation';
 import type { ColorKey, GuiNode, ModifierClass, NumberKey, Tween } from '../model/types';
-import { addModifier, addTween, align, convertUnits, deleteTween, fixedSizeReason, makeResponsive, moveInside, overlapIssues, setProp, updateTween, moveRootToScreen, setScreenStart } from '../actions';
+import { addModifier, addTween, align, convertUnits, deleteTween, fixedSizeReason, makeResponsive, moveInside, overlapIssues, setProp, updateTween, moveRootToScreen, setScreenStart, setTextMax } from '../actions';
 import { AvatarRows, BindRow, ClipSettings, CornerRow, EffectsSection, PreviewUserRow, ResponsiveCheck, ToastSection, WorldSection } from './BehaviorPanels';
 import { removeNode } from '../model/doc';
 import { ColorField, NumberField, RichTextField, Row, Segmented, SelectField, TextField, Toggle, UDim2Field, UDimField, Vec2Field } from './fields';
@@ -332,6 +332,7 @@ function GuiObjectProps({ ids, node, nodes }: { ids: string[]; node: GuiNode; no
   const set = (name: string) => (v: any) => setProp(ids.filter((id) => propDef(nodes[id].className, name)), name, v);
   const layout = useMemo(() => computeLayout(nodes, doc.rootIds, doc.device, rootOrigins(doc)), [nodes, doc]);
   const laidOut = layout.laidOut.has(node.id);
+  const textCap = node.children.map((c) => nodes[c]).find((c) => c?.className === 'UITextSizeConstraint');
   const parentLayout = node.parentId ? nodes[node.parentId].children.map((c) => nodes[c]).find((c) => c?.className === 'UIListLayout' || c?.className === 'UIGridLayout') : undefined;
   const abs = layout.rects[node.id];
   const anim = (name: string) => (mode === 'animate' && ANIMATABLE_PROPS.includes(name) ? <Diamond size={9} className="anim-diamond" /> : null);
@@ -462,9 +463,13 @@ function GuiObjectProps({ ids, node, nodes }: { ids: string[]; node: GuiNode; no
             </>
           )}
           <Row label="Font"><FontEditor value={p.FontFace} onChange={set('FontFace')} /></Row>
-          <Row label="Size">
+          <Row label="Size" title={p.TextScaled ? 'Scaled: the text grows to fill its box, up to Max (a UITextSizeConstraint; Roblox never goes past 100)' : undefined}>
             <div className="pair">
-              <NumberField label="px" value={p.TextSize} min={1} max={100} precision={0} onChange={(v) => set('TextSize')(Math.round(v))} />
+              {p.TextScaled ? (
+                <NumberField label="max" value={textCap?.props.MaxTextSize ?? 100} min={1} max={100} precision={0} onChange={(v) => setTextMax(ids, v)} />
+              ) : (
+                <NumberField label="px" value={p.TextSize} min={1} max={100} precision={0} onChange={(v) => set('TextSize')(Math.round(v))} />
+              )}
               <Toggle value={p.TextScaled} onChange={set('TextScaled')} label="Scaled" />
             </div>
           </Row>
