@@ -359,7 +359,7 @@ function PreviewDialog() {
   const scale = area ? Math.min((size.w - 80) / area.w, (size.h - 140) / area.h, viewRoot ? 3 : 1.5) : 1;
   const eventIds = useMemo(() => runtime.interactiveIds(), [runtime]);
   const ctx: RenderCtx = {
-    nodes, layout, interactive: true, scales: runtime.scales, previewUser: doc.previewUser, eventIds, pixelScale: pixelScaleFactor(doc, device),
+    nodes, layout, interactive: true, scales: runtime.scales, glows: runtime.glows, previewUser: doc.previewUser, eventIds, pixelScale: pixelScaleFactor(doc, device),
     onEvent: (id, ev) => runtime.event(id, ev),
   };
   const onMouse = (e: React.PointerEvent) => {

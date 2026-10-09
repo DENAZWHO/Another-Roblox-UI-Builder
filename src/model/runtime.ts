@@ -24,7 +24,7 @@ interface ScaleAnim { from: number; to: number; at: number; dur: number }
 /** Where a toast starts (and leaves to), as a direction in pixels-per-size; shared with the Luau output */
 export const TOAST_SLIDE: Partial<Record<ToastEnter, [number, number]>> = { slideRight: [1, 0], slideLeft: [-1, 0], slideDown: [0, -1], slideUp: [0, 1] };
 export const TOAST_GAP = 8;
-interface FxState { hovered: boolean; pressed: boolean; scale: number; look?: number; tilt: number; follow: Vec2; off: Vec2 }
+interface FxState { hovered: boolean; pressed: boolean; scale: number; glow: number; look?: number; tilt: number; follow: Vec2; off: Vec2 }
 
 /** Constant used by mouse-follow falloff and tilt, shared with the Luau output */
 export const MOUSE_RANGE = 300;
@@ -50,6 +50,8 @@ export class UIRuntime {
   mouse: Vec2 | null = null;
   /** UIScale values from effects (rendered as a scale about the AnchorPoint) */
   scales: Record<string, number> = {};
+  /** Hover glow strength (0–1) per element */
+  glows: Record<string, number> = {};
   private values: Overrides = {};
   private fxValues: Overrides = {};
   private active = new Map<string, Active>();
@@ -277,7 +279,7 @@ export class UIRuntime {
     const out = new Set<string>();
     for (const n of clickButtons(this.doc)) out.add(n.id);
     for (const c of this.doc.clips) if (c.triggerNodeId && clipTrigger(c) !== 'load' && clipTrigger(c) !== 'manual') out.add(c.triggerNodeId);
-    for (const n of Object.values(this.doc.nodes)) if (n.effects?.some((e) => e.kind === 'hoverScale' || e.kind === 'pressScale')) out.add(n.id);
+    for (const n of Object.values(this.doc.nodes)) if (n.effects?.some((e) => e.kind === 'hoverScale' || e.kind === 'pressScale' || e.kind === 'hoverGlow')) out.add(n.id);
     for (const n of Object.values(this.doc.nodes)) if (n.toast?.triggerNodeId) out.add(n.toast.triggerNodeId);
     for (const n of Object.values(this.doc.nodes)) if (n.events?.some((h) => h.on !== 'load' && h.actions.length)) out.add(n.id);
     for (const n of Object.values(this.doc.nodes)) if (this.detector(n.id)) out.add(n.id);
@@ -424,12 +426,13 @@ export class UIRuntime {
   private runEffects(dt: number, layout: LayoutResult) {
     this.fxValues = {};
     this.scales = {};
+    this.glows = {};
     const t = this.time;
     for (const n of Object.values(this.doc.nodes)) {
       if (!n.effects?.length) continue;
       const r = layout.rects[n.id];
       if (!r) continue;
-      const st = (this.fx[n.id] ??= { hovered: false, pressed: false, scale: 1, tilt: 0, follow: { x: 0, y: 0 }, off: { x: 0, y: 0 } });
+      const st = (this.fx[n.id] ??= { hovered: false, pressed: false, scale: 1, glow: 0, tilt: 0, follow: { x: 0, y: 0 }, off: { x: 0, y: 0 } });
       // measure from the un-shifted position (the rect includes last frame's offset)
       const cx = r.x + r.w / 2 - st.off.x;
       const cy = r.y + r.h / 2 - st.off.y;
@@ -494,6 +497,10 @@ export class UIRuntime {
             break;
           case 'pressScale':
             if (st.pressed) targetScale *= e.amount;
+            break;
+          case 'hoverGlow':
+            st.glow += ((st.hovered ? 1 : 0) - st.glow) * (1 - Math.exp((-4 / Math.max(0.01, e.speed)) * dt));
+            if (st.glow > 0.002) this.glows[n.id] = st.glow;
             break;
         }
       }

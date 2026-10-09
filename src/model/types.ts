@@ -62,7 +62,7 @@ export interface PathPoint {
 // ---------------------------------------------------------------------------
 // Behaviours (exported as Luau, simulated in Preview)
 
-export type EffectKind = 'lookAtMouse' | 'tiltToMouse' | 'followMouse' | 'hoverScale' | 'pressScale' | 'float' | 'spin' | 'pulse';
+export type EffectKind = 'lookAtMouse' | 'tiltToMouse' | 'followMouse' | 'hoverScale' | 'pressScale' | 'hoverGlow' | 'float' | 'spin' | 'pulse';
 
 export interface Effect {
   id: string;
@@ -72,6 +72,8 @@ export interface Effect {
   /** smoothing speed for mouse effects, duration (s) for hover/press, period (s) for float/pulse */
   speed: number;
   invert?: boolean;
+  /** hoverGlow: outline colour */
+  color?: string;
 }
 
 export type AvatarKind = 'HeadShot' | 'AvatarBust' | 'AvatarThumbnail';

@@ -220,14 +220,67 @@ export function setCornerRadius(ids: string[], radius: UDim) {
 
 export function addEffect(ids: string[], kind: EffectKind) {
   const info = EFFECTS[kind];
+  batch(() => {
+    // growing / shrinking inside a list or grid: give the element a slot first (see wrapInSlot)
+    const slotted = info.scales ? wrapInSlot(ids.filter((id) => inLayout(S().doc, id))) : [];
+    S().update((d) => {
+      for (const id of ids) {
+        const n = d.nodes[id];
+        if (!n || !isGuiObject(n.className)) continue;
+        n.effects = (n.effects ?? []).filter((e) => e.kind !== kind);
+        n.effects.push({ id: uid(), kind, amount: info.amount.default, speed: info.speed?.default ?? 1, ...(info.color ? { color: info.color } : {}) });
+      }
+    });
+    if (slotted.length) S().showToast(`Put ${slotted.length === 1 ? 'it' : 'them'} in a slot frame so ${info.label.toLowerCase()} works inside the layout`);
+  });
+}
+
+/** The element's position is set by a list / grid / page / table layout in its parent */
+export function inLayout(doc: Doc, id: string): boolean {
+  const p = doc.nodes[doc.nodes[id]?.parentId ?? ''];
+  return !!p && p.children.some((c) => LAYOUT_CLASSES.includes(doc.nodes[c]?.className as ModifierClass));
+}
+
+/** Layout-related modifiers that belong to the slot (they size or flex the item in its layout) */
+const SLOT_MODIFIERS: ClassName[] = ['UIFlexItem', 'UIAspectRatioConstraint', 'UISizeConstraint'];
+
+/**
+ * Put laid-out elements in a "slot": an invisible Frame that takes their place in the list / grid,
+ * with the element filling it, centred. In Roblox a UIScale on a list item makes the list reflow
+ * (neighbours get pushed) and grid cells don't scale around their centre; scaling the element
+ * inside its slot leaves the layout alone. Returns the ids that were wrapped.
+ */
+export function wrapInSlot(ids: string[]): string[] {
+  const done: string[] = [];
+  const before = S().doc;
   S().update((d) => {
     for (const id of ids) {
       const n = d.nodes[id];
-      if (!n || !isGuiObject(n.className)) continue;
-      n.effects = (n.effects ?? []).filter((e) => e.kind !== kind);
-      n.effects.push({ id: uid(), kind, amount: info.amount.default, speed: info.speed?.default ?? 1 });
+      const parent = n?.parentId ? d.nodes[n.parentId] : undefined;
+      if (!n || !parent || !isGuiObject(n.className)) continue;
+      const p = n.props;
+      // (copied from the document before this edit: draft values can't be cloned)
+      const p0 = before.nodes[id].props;
+      const slot = createNode('Frame', {
+        Size: p0.Size, Position: p0.Position, AnchorPoint: p0.AnchorPoint, SizeConstraint: p0.SizeConstraint, LayoutOrder: p0.LayoutOrder,
+        Visible: p0.Visible, ZIndex: p0.ZIndex, BackgroundTransparency: 1, BorderSizePixel: 0,
+      }, `${n.name}Slot`);
+      slot.parentId = parent.id;
+      d.nodes[slot.id] = slot as Draft<GuiNode>;
+      parent.children[parent.children.indexOf(id)] = slot.id;
+      const moved = n.children.filter((c) => SLOT_MODIFIERS.includes(d.nodes[c]?.className));
+      n.children = n.children.filter((c) => !moved.includes(c));
+      for (const c of moved) d.nodes[c].parentId = slot.id;
+      d.nodes[slot.id].children = [...moved, id];
+      n.parentId = slot.id;
+      Object.assign(p, {
+        Size: { x: { s: 1, o: 0 }, y: { s: 1, o: 0 } }, Position: { x: { s: 0.5, o: 0 }, y: { s: 0.5, o: 0 } },
+        AnchorPoint: { x: 0.5, y: 0.5 }, SizeConstraint: 'RelativeXY', Visible: true,
+      });
+      done.push(id);
     }
   });
+  return done;
 }
 
 export function updateEffect(nodeId: string, effectId: string, patch: Partial<Effect>) {

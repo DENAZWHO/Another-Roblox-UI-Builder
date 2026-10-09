@@ -385,7 +385,20 @@ function effectBlock(n: GuiNode, el: string, I: string): string[] {
   if (usesScale) {
     out.push(`${J}local uiScale = el:FindFirstChildOfClass("UIScale") or Instance.new("UIScale")`, `${J}uiScale.Parent = el`, `${J}local scale = 1`);
   }
-  if (has('hoverScale') || has('pressScale')) {
+  if (has('hoverGlow')) {
+    const g = get('hoverGlow');
+    out.push(
+      `${J}local glowStroke = Instance.new("UIStroke")`,
+      `${J}glowStroke.Name = "HoverGlow"`,
+      `${J}glowStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border`,
+      `${J}glowStroke.Color = Color3.fromHex(${JSON.stringify((g.color ?? '#ffffff').replace('#', ''))})`,
+      `${J}glowStroke.Thickness = ${num(g.amount)}`,
+      `${J}glowStroke.Transparency = 1`,
+      `${J}glowStroke.Parent = el`,
+      `${J}local glow = 0`,
+    );
+  }
+  if (has('hoverScale') || has('pressScale') || has('hoverGlow')) {
     out.push(
       `${J}local hovered, pressed = false, false`,
       `${J}el.MouseEnter:Connect(function() hovered = true end)`,
@@ -441,6 +454,13 @@ function effectBlock(n: GuiNode, el: string, I: string): string[] {
   }
   if (usesRot) out.push(`${K}el.Rotation = rotation`);
   if (usesPos) out.push(`${K}offset = off`, `${K}el.Position = basePosition + UDim2.fromOffset(off.X, off.Y)`);
+  if (has('hoverGlow')) {
+    const g = get('hoverGlow');
+    out.push(
+      `${K}glow += ((if hovered then 1 else 0) - glow) * (1 - math.exp(-${num(4 / Math.max(0.01, g.speed))} * dt))`,
+      `${K}glowStroke.Transparency = 1 - glow`,
+    );
+  }
   if (usesScale) {
     const hs = has('hoverScale') ? get('hoverScale') : null;
     const ps = has('pressScale') ? get('pressScale') : null;

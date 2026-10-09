@@ -6,10 +6,14 @@ export interface EffectInfo {
   amount: { label: string; default: number; step: number; min?: number; max?: number; suffix?: string };
   speed?: { label: string; default: number; step: number; min?: number; suffix?: string };
   invert?: boolean;
+  /** Has a colour (default shown) */
+  color?: string;
   /** Needs the mouse, so it does nothing on SurfaceGui / BillboardGui elements */
   mouse?: boolean;
   /** Property the effect overrides every frame (tweens on it will be fought) */
   overrides?: 'Rotation' | 'Position' | 'UIScale';
+  /** Scales the element: inside a list / grid layout it needs a slot frame (see wrapInSlot) */
+  scales?: boolean;
 }
 
 export const EFFECTS: Record<EffectKind, EffectInfo> = {
@@ -45,6 +49,14 @@ export const EFFECTS: Record<EffectKind, EffectInfo> = {
     amount: { label: 'Scale', default: 1.08, step: 0.01, min: 0.1 },
     speed: { label: 'Duration', default: 0.15, step: 0.05, min: 0.01, suffix: 's' },
     overrides: 'UIScale',
+    scales: true,
+  },
+  hoverGlow: {
+    label: 'Border glow on hover',
+    description: 'An outline fades in while the mouse is over it (adds a UIStroke).',
+    amount: { label: 'Thickness', default: 3, step: 0.5, min: 0.5, suffix: 'px' },
+    speed: { label: 'Fade', default: 0.15, step: 0.05, min: 0.01, suffix: 's' },
+    color: '#ffffff',
   },
   pressScale: {
     label: 'Shrink on press',
@@ -52,6 +64,7 @@ export const EFFECTS: Record<EffectKind, EffectInfo> = {
     amount: { label: 'Scale', default: 0.92, step: 0.01, min: 0.1 },
     speed: { label: 'Duration', default: 0.1, step: 0.05, min: 0.01, suffix: 's' },
     overrides: 'UIScale',
+    scales: true,
   },
   float: {
     label: 'Float',
@@ -72,6 +85,7 @@ export const EFFECTS: Record<EffectKind, EffectInfo> = {
     amount: { label: 'Amount', default: 0.05, step: 0.01, min: 0 },
     speed: { label: 'Period', default: 1.2, step: 0.1, min: 0.05, suffix: 's' },
     overrides: 'UIScale',
+    scales: true,
   },
 };
 

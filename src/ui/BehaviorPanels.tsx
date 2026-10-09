@@ -7,8 +7,8 @@ import { isGuiObject } from '../model/schema';
 import { clipTrigger, defaultFrom } from '../model/runtime';
 import { pathTo } from '../model/doc';
 import type { AnimClip, AvatarKind, EffectKind, GuiNode, PreviewUser, TextBinding, ToastEnter, TriggerKind } from '../model/types';
-import { addEffect, addReverseClip, makeAllResponsive, moveInside, overlapIssues, patchNodes, removeEffect, renameClip, responsiveIssues, setCornerRadius, updateClip, updateEffect } from '../actions';
-import { NumberField, Row, Segmented, SelectField, TextField, Toggle, Vec2Field } from './fields';
+import { addEffect, inLayout, wrapInSlot, addReverseClip, makeAllResponsive, moveInside, overlapIssues, patchNodes, removeEffect, renameClip, responsiveIssues, setCornerRadius, updateClip, updateEffect } from '../actions';
+import { ColorField, NumberField, Row, Segmented, SelectField, TextField, Toggle, Vec2Field } from './fields';
 import { TRIGGER_LABELS } from './labels';
 import { lookupUser } from './thumbs';
 
@@ -140,6 +140,17 @@ export function EffectsSection({ ids, node }: { ids: string[]; node: GuiNode }) 
                   <Row label={info.speed.label}>
                     <NumberField value={e.speed} step={info.speed.step} min={info.speed.min} precision={2} suffix={info.speed.suffix} onChange={(v) => updateEffect(node.id, e.id, { speed: v })} label="" />
                   </Row>
+                )}
+                {info.color && (
+                  <Row label="Color">
+                    <ColorField value={e.color ?? info.color} onChange={(v) => updateEffect(node.id, e.id, { color: v })} />
+                  </Row>
+                )}
+                {info.scales && inLayout(doc, node.id) && (
+                  <div className="font-note">
+                    In Roblox, scaling an element inside a list or grid pushes its neighbours around.{' '}
+                    <button className="link-btn" onClick={() => wrapInSlot([node.id])}>Put it in a slot frame</button> so it grows in place.
+                  </div>
                 )}
                 {info.invert && (
                   <Row label="">

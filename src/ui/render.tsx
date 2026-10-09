@@ -17,6 +17,8 @@ export interface RenderCtx {
   editingTextId?: string | null;
   /** UIScale from effects (Preview) */
   scales?: Record<string, number>;
+  /** Hover glow strength from effects (Preview) */
+  glows?: Record<string, number>;
   /** Pixel-scale factor for this screen (the 100px TextScaled limit scales with it) */
   pixelScale?: number;
   /** Player shown for avatar images / name bindings */
@@ -319,6 +321,22 @@ export const NodeView = memo(function NodeView({ id, origin, ctx }: NodeProps) {
       />
     );
   });
+
+  // "Border glow on hover" (Preview): the outline it adds, faded in
+  const glowFx = ctx.glows?.[id] ? n.effects?.find((e) => e.kind === 'hoverGlow') : undefined;
+  if (glowFx) {
+    const t = glowFx.amount;
+    rings.push(
+      <div
+        key="hover-glow"
+        className="rb-stroke"
+        style={{
+          position: 'absolute', inset: -t, border: `${t}px solid ${glowFx.color ?? '#ffffff'}`, opacity: ctx.glows![id], pointerEvents: 'none',
+          borderRadius: corners.map((c) => `${c > 0 ? c + t : 0}px`).join(' '),
+        }}
+      />,
+    );
+  }
 
   // UIShadow: a blurred copy of the shape behind it (or inside it when Inset); Text mode shadows the letters
   const textShadows = textual ? shadows.filter((s) => s.props.Mode === 'Text') : [];
