@@ -19,6 +19,9 @@ function studioSync(): Plugin {
   // Studio -> editor: property edits made to synced GUIs in Studio
   let editSeq = 0;
   const edits: { seq: number; data: unknown }[] = [];
+  // Live document mirror for tooling (the MCP server): the editor POSTs it on every change
+  let docSnapshot: string | null = null;
+  let docVersion = 0;
 
   return {
     name: 'studio-sync',
@@ -80,6 +83,27 @@ function studioSync(): Plugin {
         }
         if (req.method === 'GET' && url.pathname === '/status') {
           return send(200, { connected: Date.now() - lastPoll < 4000, version, lastApplied });
+        }
+        // Live document mirror for the MCP server. The editor POSTs the current document (tree +
+        // computed layout) here on every change — including after Studio/MCP edits — so reads stay fresh.
+        if (req.method === 'POST' && url.pathname === '/doc') {
+          let data = '';
+          req.on('data', (c) => (data += c));
+          req.on('end', () => {
+            try {
+              JSON.parse(data);
+            } catch {
+              return send(400, { error: 'invalid JSON' });
+            }
+            docVersion++;
+            docSnapshot = data;
+            send(200, { version: docVersion });
+          });
+          return;
+        }
+        if (req.method === 'GET' && url.pathname === '/doc') {
+          if (!docSnapshot) return send(204);
+          return send(200, `{"version":${docVersion},"data":${docSnapshot}}`);
         }
         if (req.method === 'GET' && url.pathname === '/plugin') {
           const src = readFileSync(resolve(fileURLToPath(new URL('.', import.meta.url)), 'studio-plugin/UIBuilderSync.lua'), 'utf8');

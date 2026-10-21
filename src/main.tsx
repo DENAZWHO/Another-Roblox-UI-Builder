@@ -5,7 +5,7 @@ import { loadAutosave, startAutosave, startRefImages } from './files';
 import { demoDoc } from './model/presets';
 import { startProjects } from './projects';
 import { loadWebFonts } from './model/fonts';
-import { startLiveSync, startStudioEdits } from './sync';
+import { startLiveSync, startStudioEdits, startDocMirror } from './sync';
 import { loadEyedropper } from './ui/eyedropper';
 import './styles.css';
 
@@ -18,5 +18,6 @@ startRefImages();
 startProjects(!!autosaved);
 startLiveSync();
 startStudioEdits();
+startDocMirror();
 
 createRoot(document.getElementById('root')!).render(<App />);

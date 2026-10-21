@@ -8,12 +8,17 @@ import { hexRgb, normalizeAsset } from './export/luau';
 import { rootScript } from './export/behavior';
 import { designSize, pixelScaleOn } from './model/pixelScale';
 import { exportedProps } from './model/richColors';
-import type { Doc, UDim2 } from './model/types';
+import type { ClassName, Doc, UDim2 } from './model/types';
 import { gameStartDoc } from './model/screens';
+import { computeLayout } from './model/layout';
+import { createNode, isAncestor } from './model/doc';
 
 type Wire = [string, unknown];
 
 const n = (v: number) => (v === Infinity ? 'inf' : v === -Infinity ? '-inf' : +(+v).toFixed(5));
+
+// AvatarKind -> rbxthumb type, so avatar images preview in Studio's edit view
+const AVATAR_THUMB: Record<string, string> = { HeadShot: 'AvatarHeadShot', AvatarBust: 'AvatarBust', AvatarThumbnail: 'Avatar' };
 
 function encode(def: PropDef, v: any): Wire {
   switch (def.type) {
@@ -69,10 +74,27 @@ export function buildWire(fullDoc: Doc) {
       if (v === undefined || def.name === 'CanvasPosition') continue;
       p[def.name] = encode(def, v);
     }
+    // Avatar images are set at runtime by the synced script (GetUserThumbnailAsync), so without this
+    // they're an empty box in Studio's edit view. Give them an rbxthumb:// Image, which Studio resolves
+    // at design time; the runtime swap still replaces it with the local player's avatar on Play.
+    if (x.avatar && (x.className === 'ImageLabel' || x.className === 'ImageButton')) {
+      const type = AVATAR_THUMB[x.avatar.kind] ?? 'AvatarHeadShot';
+      const uid = doc.previewUser?.id ?? 1;
+      const s = x.avatar.size;
+      p.Image = ['string', `rbxthumb://type=${type}&id=${uid}&w=${s}&h=${s}`];
+    }
     const u = (v: UDim2) => [v.x.s, v.x.o, v.y.s, v.y.o];
     const cp = x.className === 'Path2D' && x.points?.length ? x.points.map((pt) => [u(pt.p), u(pt.l), u(pt.r)]) : undefined;
     return { i: id, c: x.className, n: x.name, p, k: x.children.filter((c) => doc.nodes[c]).map(node), ...(cp ? { cp } : {}) };
   };
+  // Computed absolute rects (screen pixels) of every node, so tooling (the MCP server) can read the
+  // real sizes/positions the editor shows without re-implementing layout. [x, y, w, h], rounded.
+  const rects = computeLayout(doc.nodes, doc.rootIds, doc.device).rects;
+  const layout: Record<string, [number, number, number, number]> = {};
+  for (const id in rects) {
+    const r = rects[id];
+    layout[id] = [Math.round(r.x), Math.round(r.y), Math.round(r.w), Math.round(r.h)];
+  }
   return {
     format: 2,
     roots: doc.rootIds.map((id) => ({
@@ -82,6 +104,7 @@ export function buildWire(fullDoc: Doc) {
       adornee: doc.nodes[id].adornee || null,
       design: doc.nodes[id].className === 'ScreenGui' && pixelScaleOn(doc) ? [designSize(doc).w, designSize(doc).h] : null,
     })),
+    layout,
   };
 }
 
@@ -129,6 +152,38 @@ export function useSyncStatus(): SyncStatus {
     };
   }, []);
   return st;
+}
+
+/**
+ * Mirror the current document to the dev server (POST /api/studio/doc) so tooling — the MCP server —
+ * can read it. Runs independently of live sync and fires after Studio/MCP edits too (unlike the live
+ * sync push, which is suppressed during applyStudioEdits), so reads stay fresh after a write.
+ */
+export function startDocMirror() {
+  let timer: number | undefined;
+  let last = useStore.getState().doc;
+  const push = () => {
+    try {
+      fetch('/api/studio/doc', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(buildWire(useStore.getState().doc)),
+      }).catch(() => {});
+    } catch {
+      /* dev server offline — ignore */
+    }
+  };
+  const schedule = () => {
+    if (timer !== undefined) clearTimeout(timer);
+    timer = window.setTimeout(push, 250);
+  };
+  schedule();
+  return useStore.subscribe((s) => {
+    if (s.doc !== last) {
+      last = s.doc;
+      schedule();
+    }
+  });
 }
 
 /** When live sync is on, push every document change (debounced) */
@@ -196,20 +251,40 @@ export function decodeWire(def: PropDef, v: any): unknown {
   }
 }
 
-interface StudioEdit {
-  root: string;
-  edits: { i: string; n?: string; p: Record<string, [string, unknown]> }[];
+/** A structural change: add, remove, or re-parent a node. Sent by the MCP server alongside edits. */
+interface StudioOp {
+  op: 'create' | 'delete' | 'move';
+  id: string;
+  parent?: string;
+  className?: string;
+  name?: string;
+  index?: number;
 }
 
-/** Apply edits sent by the Studio plugin. Returns the property names that changed. */
+interface StudioEdit {
+  root?: string;
+  edits?: { i: string; n?: string; p: Record<string, [string, unknown]> }[];
+  ops?: StudioOp[];
+}
+
+/** Apply edits sent by the Studio plugin or the MCP server. Returns what changed. */
 export function applyStudioEdits(batch: StudioEdit[]): string[] {
   const changed: string[] = [];
   const s = useStore.getState();
   applyingStudioEdits = true;
   try {
     s.update((d) => {
+      const removeSubtree = (id: string) => {
+        const node = d.nodes[id];
+        if (!node) return;
+        for (const c of [...node.children]) removeSubtree(c);
+        const parent = node.parentId ? d.nodes[node.parentId] : null;
+        if (parent) parent.children = parent.children.filter((c) => c !== id);
+        delete d.nodes[id];
+      };
+
       for (const b of batch) {
-        for (const e of b.edits) {
+        for (const e of b.edits ?? []) {
           const n = d.nodes[e.i];
           if (!n) continue;
           if (e.n && e.n !== n.name) {
@@ -226,6 +301,40 @@ export function applyStudioEdits(batch: StudioEdit[]): string[] {
             if (JSON.stringify(value) === JSON.stringify(n.props[prop])) continue;
             n.props[prop] = value as never;
             changed.push(`${n.name}.${prop}`);
+          }
+        }
+
+        for (const op of b.ops ?? []) {
+          if (op.op === 'create') {
+            const className = op.className as ClassName | undefined;
+            if (!className || !CLASS_PROPS[className] || d.nodes[op.id]) continue;
+            const parent = op.parent ? d.nodes[op.parent] : null;
+            if (!parent) continue;
+            const node = createNode(className, {}, op.name);
+            node.id = op.id;
+            node.parentId = op.parent!;
+            d.nodes[op.id] = node;
+            const idx = Math.max(0, Math.min(op.index ?? parent.children.length, parent.children.length));
+            parent.children.splice(idx, 0, op.id);
+            changed.push(`+${node.name}`);
+          } else if (op.op === 'delete') {
+            if (!d.nodes[op.id] || d.rootIds.includes(op.id)) continue;
+            removeSubtree(op.id);
+            changed.push(`-${op.id}`);
+          } else if (op.op === 'move') {
+            const node = d.nodes[op.id];
+            if (!node || d.rootIds.includes(op.id)) continue;
+            const newParentId = op.parent ?? node.parentId;
+            if (!newParentId || !d.nodes[newParentId]) continue;
+            // no cycles: can't move a node into itself or one of its descendants
+            if (newParentId === op.id || isAncestor(d.nodes, op.id, newParentId)) continue;
+            const oldParent = node.parentId ? d.nodes[node.parentId] : null;
+            if (oldParent) oldParent.children = oldParent.children.filter((c) => c !== op.id);
+            const newParent = d.nodes[newParentId];
+            node.parentId = newParentId;
+            const idx = Math.max(0, Math.min(op.index ?? newParent.children.length, newParent.children.length));
+            newParent.children.splice(idx, 0, op.id);
+            changed.push(`~${node.name}`);
           }
         }
       }

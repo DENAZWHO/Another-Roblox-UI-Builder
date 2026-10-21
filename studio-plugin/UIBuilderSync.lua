@@ -54,6 +54,9 @@ end
 
 local function withEnds(list, make)
 	-- Roblox sequences must start at t=0 and end at t=1
+	if #list == 0 then
+		return {}
+	end
 	table.sort(list, function(a, b)
 		return a[1] < b[1]
 	end)
@@ -116,6 +119,46 @@ local decoders = {
 -- instance -> { id = editor node id, root = root id, types = { [prop] = wireType } }
 local synced = setmetatable({}, { __mode = "k" })
 
+-- Image/content properties must be Roblox references, not browser URLs. A raw http(s) or data:
+-- URL renders in the web preview but shows up blank in Studio. Convert what we can; loudly log
+-- what we can't so the broken element names itself in the Output.
+local CONTENT_PROPS = {
+	Image = true,
+	HoverImage = true,
+	PressedImage = true,
+	TopImage = true,
+	MidImage = true,
+	BottomImage = true,
+	SliderImage = true,
+	Texture = true,
+}
+
+local function normalizeContent(nodeName: string, prop: string, value)
+	if typeof(value) ~= "string" then
+		return value
+	end
+	local s = value:match("^%s*(.-)%s*$") or value
+	if s == "" then
+		return ""
+	end
+	local lower = string.lower(s)
+	if lower:find("^rbxassetid://")
+		or lower:find("^rbxthumb://")
+		or lower:find("^rbxgameasset://")
+		or lower:find("^rbxasset://")
+		or lower:find("^rbxhttp://")
+		or lower:find("^https?://www%.roblox%.com/asset")
+		or lower:find("^https?://assetdelivery%.roblox%.com")
+	then
+		return s
+	end
+	if s:match("^%d+$") then
+		return "rbxassetid://" .. s
+	end
+	warn(("[UI Builder] %s.%s can't load in Roblox: %q — needs rbxassetid:// or rbxthumb://, not a web URL"):format(nodeName, prop, s))
+	return s
+end
+
 local function build(node, rootId: string): Instance?
 	local ok, inst = pcall(Instance.new, node.c)
 	if not ok then
@@ -126,12 +169,12 @@ local function build(node, rootId: string): Instance?
 	if node.i then
 		inst:SetAttribute("UIBuilderNode", node.i)
 		local types = {}
-		for prop, pair in node.p do
+		for prop, pair in node.p or {} do
 			types[prop] = pair[1]
 		end
 		synced[inst] = { id = node.i, root = rootId, types = types }
 	end
-	for prop, pair in node.p do
+	for prop, pair in node.p or {} do
 		local decode = decoders[pair[1]]
 		local okValue, value = pcall(function()
 			if decode then
@@ -140,6 +183,9 @@ local function build(node, rootId: string): Instance?
 			return pair[2]
 		end)
 		if okValue then
+			if CONTENT_PROPS[prop] then
+				value = normalizeContent(node.n, prop, value)
+			end
 			local okSet, err = pcall(function()
 				(inst :: any)[prop] = value
 			end)
@@ -148,7 +194,7 @@ local function build(node, rootId: string): Instance?
 			end
 		end
 	end
-	for _, child in node.k do
+	for _, child in node.k or {} do
 		local c = build(child, rootId)
 		if c then
 			c.Parent = inst
@@ -421,6 +467,7 @@ local function flushEdits()
 			local meta = synced[inst]
 			if meta and inst.Parent then
 				local p = {}
+				local count = 0
 				for prop in props do
 					if prop == "Name" then
 						continue
@@ -437,9 +484,12 @@ local function flushEdits()
 						end
 						local enc = encoders[wireType]
 						p[prop] = { wireType, if enc then enc(value) else value }
+						count += 1
 					end
 				end
-				table.insert(edits, { i = meta.id, n = if props.Name then inst.Name else nil, p = p })
+				if count > 0 or props.Name then
+					table.insert(edits, { i = meta.id, n = if props.Name then inst.Name else nil, p = p })
+				end
 			end
 		end
 		if #edits > 0 then
@@ -517,7 +567,7 @@ end
 local function apply(payload, selectResult: boolean)
 	local recording = ChangeHistoryService:TryBeginRecording("UI Builder Sync")
 	local created = {}
-	for _, root in payload.roots do
+	for _, root in (payload and payload.roots) or {} do
 		for _, existing in StarterGui:GetChildren() do
 			if existing:GetAttribute(ATTRIBUTE) == root.id then
 				existing:Destroy()
@@ -600,8 +650,16 @@ local function pull(force: boolean): boolean
 		warn("[UI Builder] Bad payload: " .. tostring(data))
 		return false
 	end
-	version = data.version
-	apply(data.data, force)
+	if typeof(data) ~= "table" or data.data == nil then
+		warn("[UI Builder] Payload missing data field")
+		return false
+	end
+	version = data.version or version
+	-- A bad payload must not kill sync: isolate the build so the poll loop keeps running.
+	local okApply, applyErr = pcall(apply, data.data, force)
+	if not okApply then
+		warn(("[UI Builder] Failed to apply v%d (skipping it, sync continues): %s"):format(version, tostring(applyErr)))
+	end
 	request("POST", "/api/studio/ack?version=" .. version)
 	print(("[UI Builder] Synced v%d into StarterGui"):format(version))
 	return true
@@ -617,7 +675,11 @@ local function setLive(on: boolean)
 	print("[UI Builder] Live sync on — polling " .. BASE_URL)
 	task.spawn(function()
 		while live do
-			pull(false)
+			-- Never let a single failed poll kill the loop (that froze sync while the button still read "on")
+			local ok, err = pcall(pull, false)
+			if not ok then
+				warn("[UI Builder] Live sync hit an error (continuing): " .. tostring(err))
+			end
 			task.wait(POLL_INTERVAL)
 		end
 	end)
