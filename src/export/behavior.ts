@@ -172,7 +172,7 @@ export function behaviorLines(doc: Doc, inScope: (id: string) => boolean, ref: (
   const fxNodes = nodes.filter((n) => n.effects?.length);
   if (fxNodes.length) {
     services.add('RunService');
-    const needsMouse = fxNodes.some((n) => n.effects!.some((e) => ['lookAtMouse', 'tiltToMouse', 'followMouse'].includes(e.kind)));
+    const needsMouse = fxNodes.some((n) => n.effects!.some((e) => ['lookAtMouse', 'tiltToMouse', 'followMouse', 'hoverScale', 'pressScale', 'hoverGlow'].includes(e.kind)));
     lines.push(`${I}-- Effects`);
     if (needsMouse) {
       services.add('UserInputService');
@@ -374,6 +374,7 @@ function effectBlock(n: GuiNode, el: string, I: string): string[] {
   const usesPos = has('followMouse') || has('float');
   const usesRot = has('lookAtMouse') || has('tiltToMouse') || has('spin');
   const usesMouse = has('lookAtMouse') || has('tiltToMouse') || has('followMouse');
+  const usesHover = has('hoverScale') || has('pressScale') || has('hoverGlow');
   const J = I + '\t';
   const K = J + '\t';
   const out = [`${I}do -- ${n.name}: ${fx.map((e) => e.kind).join(', ')}`, `${J}local el = ${el}`];
@@ -398,11 +399,11 @@ function effectBlock(n: GuiNode, el: string, I: string): string[] {
       `${J}local glow = 0`,
     );
   }
-  if (has('hoverScale') || has('pressScale') || has('hoverGlow')) {
+  if (usesHover) {
+    // Hover is checked per frame in the loop below (MouseEnter/MouseLeave drop events on moving
+    // elements). Press stays event-driven — a click is discrete and reliable.
     out.push(
       `${J}local hovered, pressed = false, false`,
-      `${J}el.MouseEnter:Connect(function() hovered = true end)`,
-      `${J}el.MouseLeave:Connect(function() hovered = false; pressed = false end)`,
       `${J}el.InputBegan:Connect(function(input)`,
       `${K}if ${isPressInput} then pressed = true end`,
       `${J}end)`,
@@ -415,9 +416,17 @@ function effectBlock(n: GuiNode, el: string, I: string): string[] {
   if (usesTime) out.push(`${J}local startTime = os.clock()`);
   out.push(`${J}RunService.RenderStepped:Connect(function(dt)`);
   if (usesTime) out.push(`${K}local t = os.clock() - startTime`);
+  if (usesMouse || usesHover) out.push(`${K}local m = mouseIn(el)`);
   if (usesMouse) {
-    out.push(`${K}local m = mouseIn(el)`);
     out.push(`${K}local c = el.AbsolutePosition + el.AbsoluteSize / 2${usesPos ? ' - offset' : ''}`);
+  }
+  if (usesHover) {
+    // Reliable hover even while the element floats/tilts: test the cursor against its live rect
+    out.push(
+      `${K}local ap, sz = el.AbsolutePosition, el.AbsoluteSize`,
+      `${K}hovered = el.Visible and m.X >= ap.X and m.X <= ap.X + sz.X and m.Y >= ap.Y and m.Y <= ap.Y + sz.Y`,
+      `${K}if not hovered then pressed = false end`,
+    );
   }
   if (usesRot) out.push(`${K}local rotation = baseRotation`);
   if (usesPos) out.push(`${K}local off = Vector2.zero`);

@@ -117,6 +117,19 @@ export function extractFragment(nodes: Record<string, GuiNode>, ids: string[]): 
   return { nodes: out, rootIds: [...ids] };
 }
 
+/** A name not used by any other child of parentId — appends/bumps a numeric suffix on collision. */
+function uniqueSiblingName(doc: Doc, parentId: string, name: string, exceptId: string): string {
+  const taken = new Set<string>();
+  for (const c of doc.nodes[parentId]?.children ?? []) {
+    if (c !== exceptId && doc.nodes[c]) taken.add(doc.nodes[c].name);
+  }
+  if (!taken.has(name)) return name;
+  const base = name.replace(/\d+$/, '') || name; // "templatebutton2" -> "templatebutton"
+  let i = 2;
+  while (taken.has(base + i)) i++;
+  return base + i;
+}
+
 /** Insert a fragment with fresh ids. Returns the new root ids. */
 export function insertFragment(doc: Doc, frag: Fragment, parentId: string | null, index?: number): string[] {
   const map = new Map<string, string>();
@@ -161,7 +174,13 @@ export function insertFragment(doc: Doc, frag: Fragment, parentId: string | null
     doc.nodes[copy.id] = copy;
   }
   const roots = frag.rootIds.map((r) => map.get(r)!);
-  roots.forEach((r, i) => attach(doc, r, parentId, index === undefined ? undefined : index + i));
+  roots.forEach((r, i) => {
+    attach(doc, r, parentId, index === undefined ? undefined : index + i);
+    // Keep sibling names unique so name-path references (behavior scripts, WaitForChild) target this
+    // copy instead of resolving to the first match — e.g. a duplicated "templatebutton".
+    const node = doc.nodes[r];
+    if (node.parentId) node.name = uniqueSiblingName(doc, node.parentId, node.name, r);
+  });
   return roots;
 }
 
